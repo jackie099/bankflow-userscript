@@ -310,6 +310,7 @@
     root.querySelector("#bf-close").addEventListener("click", toggle);
     panel.addEventListener("click", onClick);
     panel.addEventListener("input", onInput);
+    panel.addEventListener("change", onInput);
     panel.addEventListener("keydown", (e) => {
       if (e.key === "Enter") {
         const a = e.target.dataset.enterAction;
@@ -475,6 +476,8 @@
     }
     if (el.dataset.input === "target") {
       S.transfer.targetId = el.value;
+      const btn = root.querySelector('[data-action="do-transfer"]');
+      if (btn) btn.disabled = !(S.transfer.sources.size > 0 && S.transfer.targetId);
     }
   }
 
