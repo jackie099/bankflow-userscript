@@ -376,7 +376,7 @@
         </div>
       </div>
       <div id="bf-content"></div>
-      <div id="bf-bottom" style="display:none"></div>
+      <div id="bf-bottom" class="tf-bottom" style="display:none"></div>
     `;
     root.appendChild(panel);
 
@@ -448,28 +448,28 @@
 
     if (S.loading) {
       h += '<div class="loading"><div class="spinner"></div><div>Loading...</div></div>';
-      bottom.style.display = "none";
+      bottom.style.display = "none"; bottom.innerHTML = "";
       panel.classList.remove("wide");
     } else if (!hasToken()) {
       h += '<div class="waiting">Waiting for session...<br/><br/>Log into your bank account — BankFlow will activate automatically.</div>';
-      bottom.style.display = "none";
+      bottom.style.display = "none"; bottom.innerHTML = "";
       panel.classList.remove("wide");
     } else {
       switch (S.view) {
         case "transfer":
           h += transferView();
           bottom.innerHTML = transferBottom();
-          bottom.style.display = "flex";
+          bottom.style.display = "";
           panel.classList.add("wide");
           break;
         case "results":
           h += resultsView();
-          bottom.style.display = "none";
+          bottom.style.display = "none"; bottom.innerHTML = "";
           panel.classList.remove("wide");
           break;
         default:
           h += homeView();
-          bottom.style.display = "none";
+          bottom.style.display = "none"; bottom.innerHTML = "";
           panel.classList.remove("wide");
           break;
       }
