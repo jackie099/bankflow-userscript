@@ -8,55 +8,72 @@
     .info { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); text-align: center; }
     .info h1 { color: #3b82f6; font-size: 18px; margin-bottom: 8px; }
     .info p { font-size: 13px; line-height: 1.6; }
+    .info button { margin-top: 16px; padding: 8px 20px; background: #3b82f6; color: #fff;
+      border: none; border-radius: 6px; font-size: 14px; cursor: pointer; }
+    .info button:hover { background: #2563eb; }
     kbd { background: #222; padding: 2px 6px; border-radius: 3px; font-size: 12px; }
   </style>
 </head>
 <body>
   <div class="info">
     <h1>BankFlow Dev Mode</h1>
-    <p>Click the <strong>BF</strong> button (bottom-right) to open the panel.<br/>
-    Use <kbd>F12</kbd> to open DevTools for debugging.</p>
+    <p>This page simulates a bank site for UI debugging.<br/>
+    Click the button below to inject a fake token, then use the <strong>BF</strong> button.</p>
+    <button onclick="injectFakeToken()">Simulate Login</button>
+    <p style="margin-top:12px;font-size:11px;color:#555">
+      The script detects the bank from hostname. Since this isn't a real bank site,<br/>
+      we patch the bank detection to allow running locally.
+    </p>
   </div>
 
   <script>
-    // Shim GM_* APIs for local development
-    const gmStore = {};
-    function GM_getValue(key, def) {
-      const v = localStorage.getItem('bf_' + key);
-      return v !== null ? JSON.parse(v) : def;
-    }
-    function GM_setValue(key, val) {
-      localStorage.setItem('bf_' + key, JSON.stringify(val));
-    }
-    function GM_registerMenuCommand() {}
-    function GM_xmlhttpRequest(opts) {
-      const init = {
-        method: opts.method,
-        headers: {},
-      };
-      // Copy headers (skip Cookie — browser can't set it via fetch)
-      for (const [k, v] of Object.entries(opts.headers || {})) {
-        if (k.toLowerCase() === 'cookie') continue;
-        init.headers[k] = v;
-      }
-      if (opts.data) init.body = opts.data;
+    // Patch: pretend we're on a bank site for local dev
+    // The userscript checks location.hostname, so we override BANK detection
+    // by injecting a script that sets up the bank before the userscript runs.
 
-      fetch(opts.url, init)
-        .then(async (r) => {
-          const text = await r.text();
-          const headerLines = [];
-          r.headers.forEach((v, k) => headerLines.push(`${k}: ${v}`));
-          opts.onload({
-            status: r.status,
-            responseText: text,
-            responseHeaders: headerLines.join('\r\n'),
-          });
-        })
-        .catch((e) => {
-          if (opts.onerror) opts.onerror({ error: e.message });
-        });
+    // We'll load the userscript via a modified approach:
+    // 1. Override the bank detection to accept localhost
+    // 2. Provide a way to inject a fake token
+
+    // Since the userscript wraps in an IIFE and checks hostname,
+    // we need to patch it for dev. We'll eval a modified version.
+
+    let fakeTokenInjected = false;
+
+    async function loadScript() {
+      const resp = await fetch('bankflow.user.js');
+      let code = await resp.text();
+
+      // Strip the userscript header
+      code = code.replace(/\/\/ ==UserScript==[\s\S]*?\/\/ ==\/UserScript==/, '');
+
+      // Patch bank detection to accept localhost
+      code = code.replace(
+        'const BANK = BANK_MAP[location.hostname];',
+        'const BANK = BANK_MAP[location.hostname] || { id: "ucu", name: "UCU", full: "University Credit Union" };'
+      );
+
+      // Patch: skip the "if (!BANK) return;" check is already handled by the fallback above
+
+      eval(code);
     }
+
+    function injectFakeToken() {
+      // Simulate a fetch call with an Authorization header to trigger token capture
+      const origFetch = window.__origFetch || window.fetch;
+      window.__origFetch = origFetch;
+
+      // Make a fake request that our interceptor will see
+      fetch('/fake-api', {
+        headers: { 'Authorization': 'Bearer fake-dev-token-12345' }
+      }).catch(() => {});
+
+      fakeTokenInjected = true;
+      document.querySelector('.info button').textContent = 'Token Injected!';
+      document.querySelector('.info button').disabled = true;
+    }
+
+    loadScript();
   </script>
-  <script src="bankflow.user.js"></script>
 </body>
 </html>
