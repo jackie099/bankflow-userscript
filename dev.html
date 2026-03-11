@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>BankFlow Dev</title>
+  <style>
+    body { margin: 0; background: #0a0a0a; color: #888; font-family: system-ui; }
+    .info { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); text-align: center; }
+    .info h1 { color: #3b82f6; font-size: 18px; margin-bottom: 8px; }
+    .info p { font-size: 13px; line-height: 1.6; }
+    kbd { background: #222; padding: 2px 6px; border-radius: 3px; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <div class="info">
+    <h1>BankFlow Dev Mode</h1>
+    <p>Click the <strong>BF</strong> button (bottom-right) to open the panel.<br/>
+    Use <kbd>F12</kbd> to open DevTools for debugging.</p>
+  </div>
+
+  <script>
+    // Shim GM_* APIs for local development
+    const gmStore = {};
+    function GM_getValue(key, def) {
+      const v = localStorage.getItem('bf_' + key);
+      return v !== null ? JSON.parse(v) : def;
+    }
+    function GM_setValue(key, val) {
+      localStorage.setItem('bf_' + key, JSON.stringify(val));
+    }
+    function GM_registerMenuCommand() {}
+    function GM_xmlhttpRequest(opts) {
+      const init = {
+        method: opts.method,
+        headers: {},
+      };
+      // Copy headers (skip Cookie — browser can't set it via fetch)
+      for (const [k, v] of Object.entries(opts.headers || {})) {
+        if (k.toLowerCase() === 'cookie') continue;
+        init.headers[k] = v;
+      }
+      if (opts.data) init.body = opts.data;
+
+      fetch(opts.url, init)
+        .then(async (r) => {
+          const text = await r.text();
+          const headerLines = [];
+          r.headers.forEach((v, k) => headerLines.push(`${k}: ${v}`));
+          opts.onload({
+            status: r.status,
+            responseText: text,
+            responseHeaders: headerLines.join('\r\n'),
+          });
+        })
+        .catch((e) => {
+          if (opts.onerror) opts.onerror({ error: e.message });
+        });
+    }
+  </script>
+  <script src="bankflow.user.js"></script>
+</body>
+</html>
