@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BankFlow
 // @namespace    bankflow
-// @version      2.0.0
+// @version      2.1.0
 // @description  Transfer & merge assistant for UCU and BCU credit union accounts
 // @match        https://online.ucu.org/*
 // @match        https://safe.bcu.org/*
@@ -24,13 +24,12 @@
   // ── Token Interception ──────────────────────────────────────────────
   let token = null;
   let tokenLastSeen = 0;
-  const TOKEN_TTL = 600_000; // 10 minutes
+  const TOKEN_TTL = 600_000;
 
   function captureToken(authHeader) {
     if (typeof authHeader === "string" && authHeader.startsWith("Bearer ")) {
       token = authHeader.slice(7);
       tokenLastSeen = Date.now();
-      // If UI exists, update status
       if (root) updateStatus();
     }
   }
@@ -105,6 +104,7 @@
     return (data.accounts || []).map((a) => ({
       id: a.id,
       nickname: a.nickname || a.description,
+      suffix: a.suffix,
       availableBalance: a.availableBalance,
       currentBalance: a.actualBalance,
       type: a.primaryMapping === "S" ? "savings" : "checking",
@@ -140,12 +140,14 @@
   };
 
   // ── UI ──────────────────────────────────────────────────────────────
-  let root; // shadow root
+  let root;
 
   const CSS = `
     :host { --bg: #0f172a; --surface: #1e293b; --border: #334155; --text: #e2e8f0;
-      --muted: #94a3b8; --accent: #3b82f6; --accent-h: #2563eb; --green: #22c55e;
+      --muted: #94a3b8; --accent: #3b82f6; --accent-h: #2563eb; --green: #22c55e; --emerald: #10b981;
       --red: #ef4444; --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+
+    * { box-sizing: border-box; }
 
     #bf-toggle {
       pointer-events: auto; position: fixed; bottom: 20px; right: 20px;
@@ -158,11 +160,12 @@
 
     #bf-panel {
       pointer-events: auto; display: none; flex-direction: column;
-      position: fixed; bottom: 76px; right: 20px; width: 360px; max-height: 75vh;
+      position: fixed; bottom: 76px; right: 20px; width: 380px; max-height: 80vh;
       background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
       box-shadow: 0 8px 32px rgba(0,0,0,.5); font: 13px var(--font); color: var(--text);
-      overflow: hidden;
+      overflow: hidden; transition: width .2s;
     }
+    #bf-panel.wide { width: 520px; }
 
     #bf-header {
       display: flex; align-items: center; justify-content: space-between;
@@ -185,7 +188,7 @@
     #bf-content { padding: 14px; overflow-y: auto; flex: 1; }
 
     /* Accounts table */
-    .bf-section { font-size: 11px; text-transform: uppercase; letter-spacing: .5px;
+    .section-hdr { font-size: 11px; text-transform: uppercase; letter-spacing: .5px;
       color: var(--muted); margin-bottom: 8px; display: flex; align-items: center;
       justify-content: space-between; }
     table { width: 100%; border-collapse: collapse; margin-bottom: 12px; }
@@ -203,9 +206,9 @@
       padding: 7px 16px; border-radius: 6px; border: none; font: 600 13px var(--font);
       cursor: pointer; transition: background .15s;
     }
-    .btn-p { background: var(--accent); color: #fff; }
-    .btn-p:hover { background: var(--accent-h); }
-    .btn-p:disabled { opacity: .5; cursor: not-allowed; }
+    .btn-p { background: var(--emerald); color: #fff; }
+    .btn-p:hover { background: #059669; }
+    .btn-p:disabled { opacity: .4; cursor: not-allowed; }
     .btn-s { background: var(--bg); color: var(--text); border: 1px solid var(--border); }
     .btn-s:hover { border-color: var(--text); }
     .btn-sm { padding: 3px 10px; font-size: 11px; }
@@ -216,31 +219,98 @@
     .alert.error { background: rgba(239,68,68,.12); color: var(--red); }
     .alert.success { background: rgba(34,197,94,.12); color: var(--green); }
 
-    /* Transfer */
-    .label { display: block; font-size: 11px; color: var(--muted); margin-bottom: 4px; }
-    .select {
-      width: 100%; box-sizing: border-box; padding: 7px 10px; border-radius: 5px;
-      border: 1px solid var(--border); background: var(--bg); color: var(--text);
-      font: 13px var(--font); outline: none; margin-bottom: 10px; appearance: auto;
+    /* Two-column transfer layout */
+    .tf-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .tf-col-hdr {
+      font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .5px;
+      color: var(--muted); margin-bottom: 6px; display: flex; align-items: center;
+      justify-content: space-between;
     }
-    .select:focus { border-color: var(--accent); }
-    .src-item {
-      display: flex; align-items: center; gap: 8px; padding: 8px 10px;
-      background: var(--bg); border-radius: 5px; margin-bottom: 6px; cursor: pointer;
+    .tf-toggle-all { font-size: 11px; font-weight: 500; color: rgba(16,185,129,.7);
+      cursor: pointer; text-transform: none; letter-spacing: 0; }
+    .tf-toggle-all:hover { color: var(--emerald); }
+    .tf-list {
+      border: 1px solid var(--border); border-radius: 6px; overflow: hidden;
+      max-height: 50vh; overflow-y: auto;
     }
-    .src-item:hover { outline: 1px solid var(--border); }
-    .src-item input[type=checkbox] { accent-color: var(--accent); cursor: pointer; }
-    .src-info { flex: 1; }
-    .src-name { font-size: 13px; }
-    .src-bal { font-size: 11px; color: var(--muted); }
-    .src-amt {
-      width: 90px; box-sizing: border-box; padding: 4px 8px; border-radius: 4px;
-      border: 1px solid var(--border); background: var(--surface); color: var(--text);
-      font: 13px var(--font); text-align: right; outline: none;
+    .tf-list::-webkit-scrollbar { width: 4px; }
+    .tf-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+    /* Source account row */
+    .tf-row {
+      padding: 7px 10px; transition: background .1s; cursor: pointer;
+      border-bottom: 1px solid rgba(51,65,85,.3);
     }
-    .src-amt:focus { border-color: var(--accent); }
-    .all-link { font-size: 11px; color: var(--accent); cursor: pointer; margin-left: 4px; }
-    .all-link:hover { text-decoration: underline; }
+    .tf-row:last-child { border-bottom: none; }
+    .tf-row:hover { background: rgba(15,23,42,.5); }
+    .tf-row.selected { background: rgba(16,185,129,.05); }
+    .tf-row.is-target { opacity: .2; pointer-events: none; }
+    .tf-row-main { display: flex; align-items: center; gap: 8px; }
+    .tf-check {
+      width: 16px; height: 16px; border-radius: 3px; border: 1.5px solid var(--border);
+      display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+      transition: all .15s;
+    }
+    .tf-check.on { border-color: var(--emerald); background: var(--emerald); }
+    .tf-check svg { display: none; }
+    .tf-check.on svg { display: block; }
+    .tf-name { flex: 1; min-width: 0; }
+    .tf-name-text { font-size: 12px; font-weight: 500; color: #fff; }
+    .tf-name-suffix { font-size: 11px; color: var(--border); margin-left: 4px; }
+    .tf-bal { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; flex-shrink: 0; }
+    /* Amount editor */
+    .tf-amount-row { display: flex; align-items: center; gap: 6px; margin: 5px 0 0 24px; }
+    .tf-amount-row span { font-size: 11px; color: var(--border); }
+    .tf-amt {
+      width: 80px; padding: 3px 6px; border-radius: 3px;
+      border: 1px solid var(--border); background: var(--bg); color: var(--emerald);
+      font: 12px var(--font); text-align: right; outline: none;
+      font-variant-numeric: tabular-nums;
+      -moz-appearance: textfield;
+    }
+    .tf-amt::-webkit-inner-spin-button, .tf-amt::-webkit-outer-spin-button { -webkit-appearance: none; }
+    .tf-amt:focus { border-color: rgba(16,185,129,.5); }
+    .tf-all { font-size: 11px; color: var(--border); cursor: pointer; }
+    .tf-all:hover { color: var(--emerald); }
+
+    /* Target account row (radio) */
+    .tf-radio {
+      width: 16px; height: 16px; border-radius: 50%; border: 2px solid var(--border);
+      display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+      transition: all .15s;
+    }
+    .tf-radio.on { border-color: var(--emerald); }
+    .tf-radio-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--emerald); display: none; }
+    .tf-radio.on .tf-radio-dot { display: block; }
+
+    /* Source summary */
+    .tf-summary {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 4px 2px; margin-top: 6px; font-size: 11px; color: var(--muted);
+    }
+    .tf-summary-amount { font-size: 12px; font-weight: 700; color: var(--emerald);
+      font-variant-numeric: tabular-nums; }
+
+    /* Target projected balance */
+    .tf-projected {
+      margin-top: 8px; padding: 8px 10px; border-radius: 5px;
+      border: 1px solid rgba(16,185,129,.2); background: rgba(16,185,129,.05);
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .tf-projected-label { font-size: 11px; color: var(--muted); }
+    .tf-projected-val { font-size: 14px; font-weight: 700; color: var(--emerald);
+      font-variant-numeric: tabular-nums; }
+
+    /* Bottom bar */
+    .tf-bottom {
+      border-top: 1px solid var(--border); padding: 10px 14px;
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .tf-bottom-info { font-size: 11px; color: var(--muted); }
+    .tf-bottom-info strong { color: var(--emerald); }
+    .tf-bottom-info .tf-arrow { color: var(--muted); margin: 0 4px; }
+    .tf-bottom-info .tf-target-name { color: var(--text); }
+    .tf-bottom-btns { display: flex; gap: 6px; }
 
     .back {
       display: inline-flex; align-items: center; gap: 4px; background: none; border: none;
@@ -275,6 +345,8 @@
     return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(n);
   }
 
+  const checkSvg = '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="3" stroke-linecap="round"><path d="M20 6L9 17l-5-5"/></svg>';
+
   function createUI() {
     const host = document.createElement("div");
     host.id = "bankflow-host";
@@ -304,6 +376,7 @@
         </div>
       </div>
       <div id="bf-content"></div>
+      <div id="bf-bottom" style="display:none"></div>
     `;
     root.appendChild(panel);
 
@@ -364,21 +437,41 @@
   // ── Render ──────────────────────────────────────────────────────────
   function render() {
     const el = root.querySelector("#bf-content");
+    const bottom = root.querySelector("#bf-bottom");
+    const panel = root.querySelector("#bf-panel");
     if (!el) return;
     updateStatus();
+
     let h = "";
     if (S.error) h += `<div class="alert error">${esc(S.error)}</div>`;
     if (S.message) h += `<div class="alert success">${esc(S.message)}</div>`;
 
     if (S.loading) {
       h += '<div class="loading"><div class="spinner"></div><div>Loading...</div></div>';
+      bottom.style.display = "none";
+      panel.classList.remove("wide");
     } else if (!hasToken()) {
       h += '<div class="waiting">Waiting for session...<br/><br/>Log into your bank account — BankFlow will activate automatically.</div>';
+      bottom.style.display = "none";
+      panel.classList.remove("wide");
     } else {
       switch (S.view) {
-        case "transfer": h += transferView(); break;
-        case "results": h += resultsView(); break;
-        default: h += homeView(); break;
+        case "transfer":
+          h += transferView();
+          bottom.innerHTML = transferBottom();
+          bottom.style.display = "flex";
+          panel.classList.add("wide");
+          break;
+        case "results":
+          h += resultsView();
+          bottom.style.display = "none";
+          panel.classList.remove("wide");
+          break;
+        default:
+          h += homeView();
+          bottom.style.display = "none";
+          panel.classList.remove("wide");
+          break;
       }
     }
     el.innerHTML = h;
@@ -390,7 +483,7 @@
       return '<div class="loading"><div class="spinner"></div><div>Loading accounts...</div></div>';
     }
 
-    let h = `<div class="bf-section"><span>Accounts</span>
+    let h = `<div class="section-hdr"><span>Accounts</span>
       <button class="btn btn-s btn-sm" data-action="refresh">Refresh</button></div>`;
     h += "<table><thead><tr><th>Account</th><th>Balance</th></tr></thead><tbody>";
     let total = 0;
@@ -406,45 +499,111 @@
 
   function transferView() {
     const accounts = S.accounts;
-    let h = '<button class="back" data-action="back">&larr; Back</button>';
+    const sourceCandidates = accounts.filter((a) => a.id !== S.transfer.targetId && a.availableBalance > 0);
+    const allSelected = sourceCandidates.length > 0 && sourceCandidates.every((a) => S.transfer.sources.has(a.id));
 
-    h += '<div class="label" style="margin-bottom:8px">From</div>';
+    let h = '<div class="tf-grid">';
+
+    // ── Left: Sources ──
+    h += "<div>";
+    h += `<div class="tf-col-hdr">
+      <span>From</span>
+      <span class="tf-toggle-all" data-action="toggle-all">${allSelected ? "Deselect all" : "Select all"}</span>
+    </div>`;
+    h += '<div class="tf-list">';
     for (const a of accounts) {
-      const checked = S.transfer.sources.has(a.id);
+      if (a.availableBalance <= 0) continue;
+      const isTarget = S.transfer.targetId === a.id;
+      const selected = S.transfer.sources.has(a.id) && !isTarget;
       const amount = S.transfer.amounts[a.id] ?? a.availableBalance;
-      h += `<div class="src-item">
-        <input type="checkbox" data-action="toggle-source" data-param="${esc(a.id)}" ${checked ? "checked" : ""} />
-        <div class="src-info">
-          <div class="src-name">${esc(a.nickname)}</div>
-          <div class="src-bal">${fmtCurrency(a.availableBalance)}</div>
+      const isPartial = selected && amount > 0 && amount < a.availableBalance;
+
+      h += `<div class="tf-row ${selected ? "selected" : ""} ${isTarget ? "is-target" : ""}" data-action="toggle-source" data-param="${esc(a.id)}">
+        <div class="tf-row-main">
+          <div class="tf-check ${selected ? "on" : ""}">${checkSvg}</div>
+          <div class="tf-name">
+            <span class="tf-name-text">${esc(a.nickname)}</span>
+            ${a.suffix ? `<span class="tf-name-suffix">...${esc(a.suffix)}</span>` : ""}
+          </div>
+          <span class="tf-bal">${fmtCurrency(a.availableBalance)}</span>
         </div>
-        ${checked ? `
-          <input type="number" class="src-amt" data-input="amount" data-account="${esc(a.id)}"
-            value="${amount}" min="0.01" max="${a.availableBalance}" step="0.01" />
-          ${amount < a.availableBalance ? `<span class="all-link" data-action="set-all" data-param="${esc(a.id)}">all</span>` : ""}
+        ${selected ? `
+          <div class="tf-amount-row" onclick="event.stopPropagation()">
+            <span>$</span>
+            <input type="number" class="tf-amt" data-input="amount" data-account="${esc(a.id)}"
+              value="${amount}" min="0.01" max="${a.availableBalance}" step="0.01"
+              onclick="event.stopPropagation()" onfocus="this.select()" />
+            ${isPartial ? `<span class="tf-all" data-action="set-all" data-param="${esc(a.id)}">all</span>` : ""}
+          </div>
         ` : ""}
       </div>`;
     }
+    h += "</div>";
 
-    const targets = accounts.filter((a) => !S.transfer.sources.has(a.id));
-    h += '<label class="label" style="margin-top:6px">To</label>';
-    h += '<select class="select" id="bf-target" data-input="target"><option value="">Select account</option>';
-    for (const a of targets) {
-      h += `<option value="${esc(a.id)}" ${a.id === S.transfer.targetId ? "selected" : ""}>${esc(a.nickname)} (${fmtCurrency(a.availableBalance)})</option>`;
+    // Source summary
+    const selectedSources = accounts.filter((a) => S.transfer.sources.has(a.id) && a.id !== S.transfer.targetId);
+    const totalAmount = selectedSources.reduce((sum, a) => sum + (S.transfer.amounts[a.id] ?? a.availableBalance), 0);
+    h += `<div class="tf-summary">
+      <span>${selectedSources.filter((a) => (S.transfer.amounts[a.id] ?? a.availableBalance) > 0).length} selected</span>
+      <span class="tf-summary-amount">${fmtCurrency(totalAmount)}</span>
+    </div>`;
+    h += "</div>";
+
+    // ── Right: Target ──
+    h += "<div>";
+    h += '<div class="tf-col-hdr"><span>To</span></div>';
+    h += '<div class="tf-list">';
+    for (const a of accounts) {
+      const isTarget = S.transfer.targetId === a.id;
+      h += `<div class="tf-row ${isTarget ? "selected" : ""}" data-action="set-target" data-param="${esc(a.id)}">
+        <div class="tf-row-main">
+          <div class="tf-radio ${isTarget ? "on" : ""}"><div class="tf-radio-dot"></div></div>
+          <div class="tf-name">
+            <span class="tf-name-text">${esc(a.nickname)}</span>
+            ${a.suffix ? `<span class="tf-name-suffix">...${esc(a.suffix)}</span>` : ""}
+          </div>
+          <span class="tf-bal">${fmtCurrency(a.availableBalance)}</span>
+        </div>
+      </div>`;
     }
-    h += "</select>";
+    h += "</div>";
 
-    let total = 0;
-    S.transfer.sources.forEach((id) => {
-      total += S.transfer.amounts[id] ?? S.accounts.find((a) => a.id === id)?.availableBalance ?? 0;
-    });
-    if (S.transfer.sources.size > 0) {
-      h += `<div style="font-size:12px;color:var(--muted);margin-bottom:10px">Total: <strong style="color:var(--text)">${fmtCurrency(total)}</strong></div>`;
+    // Projected balance
+    if (S.transfer.targetId) {
+      const target = accounts.find((a) => a.id === S.transfer.targetId);
+      if (target) {
+        const projected = target.availableBalance + totalAmount;
+        h += `<div class="tf-projected">
+          <span class="tf-projected-label">After transfer</span>
+          <span class="tf-projected-val">${fmtCurrency(projected)}</span>
+        </div>`;
+      }
     }
+    h += "</div>";
 
-    const ok = S.transfer.sources.size > 0 && S.transfer.targetId;
-    h += `<button class="btn btn-p" data-action="do-transfer" style="width:100%" ${ok ? "" : "disabled"}>Execute Transfer</button>`;
+    h += "</div>"; // close tf-grid
     return h;
+  }
+
+  function transferBottom() {
+    const accounts = S.accounts;
+    const selectedSources = accounts.filter((a) => S.transfer.sources.has(a.id) && a.id !== S.transfer.targetId);
+    const totalAmount = selectedSources.reduce((sum, a) => sum + (S.transfer.amounts[a.id] ?? a.availableBalance), 0);
+    const target = accounts.find((a) => a.id === S.transfer.targetId);
+    const canExecute = selectedSources.some((a) => (S.transfer.amounts[a.id] ?? a.availableBalance) > 0) && S.transfer.targetId;
+
+    let info = `${selectedSources.filter((a) => (S.transfer.amounts[a.id] ?? a.availableBalance) > 0).length} accounts · <strong>${fmtCurrency(totalAmount)}</strong>`;
+    if (target) {
+      info += `<span class="tf-arrow">\u2192</span><span class="tf-target-name">${esc(target.nickname)}</span>`;
+    }
+
+    return `
+      <div class="tf-bottom-info">${info}</div>
+      <div class="tf-bottom-btns">
+        <button class="btn btn-s btn-sm" data-action="back">Cancel</button>
+        <button class="btn btn-p btn-sm" data-action="do-transfer" ${canExecute ? "" : "disabled"}>Execute</button>
+      </div>
+    `;
   }
 
   function resultsView() {
@@ -473,11 +632,9 @@
       const id = el.dataset.account;
       const max = S.accounts.find((a) => a.id === id)?.availableBalance ?? Infinity;
       S.transfer.amounts[id] = Math.min(parseFloat(el.value) || 0, max);
-    }
-    if (el.dataset.input === "target") {
-      S.transfer.targetId = el.value;
-      const btn = root.querySelector('[data-action="do-transfer"]');
-      if (btn) btn.disabled = !(S.transfer.sources.size > 0 && S.transfer.targetId);
+      // Update bottom bar and summary without full re-render
+      const bottom = root.querySelector("#bf-bottom");
+      if (bottom) bottom.innerHTML = transferBottom();
     }
   }
 
@@ -491,13 +648,20 @@
           render();
           break;
 
-        case "show-transfer":
+        case "show-transfer": {
+          // Pre-select all accounts with balance
           S.transfer.sources.clear();
           S.transfer.amounts = {};
           S.transfer.targetId = "";
+          const withBalance = S.accounts.filter((a) => a.availableBalance > 0);
+          withBalance.forEach((a) => {
+            S.transfer.sources.add(a.id);
+            S.transfer.amounts[a.id] = a.availableBalance;
+          });
           S.view = "transfer";
           render();
           break;
+        }
 
         case "toggle-source":
           saveAmounts();
@@ -506,10 +670,36 @@
             delete S.transfer.amounts[param];
           } else {
             S.transfer.sources.add(param);
-            S.transfer.amounts[param] = S.accounts.find((a) => a.id === param)?.availableBalance ?? 0;
+            const acct = S.accounts.find((a) => a.id === param);
+            if (acct) S.transfer.amounts[param] = acct.availableBalance;
           }
           if (S.transfer.sources.has(S.transfer.targetId)) S.transfer.targetId = "";
-          readTarget();
+          render();
+          break;
+
+        case "toggle-all": {
+          saveAmounts();
+          const candidates = S.accounts.filter((a) => a.id !== S.transfer.targetId && a.availableBalance > 0);
+          const allSelected = candidates.every((a) => S.transfer.sources.has(a.id));
+          if (allSelected) {
+            S.transfer.sources.clear();
+            S.transfer.amounts = {};
+          } else {
+            candidates.forEach((a) => {
+              S.transfer.sources.add(a.id);
+              if (!(a.id in S.transfer.amounts)) S.transfer.amounts[a.id] = a.availableBalance;
+            });
+          }
+          render();
+          break;
+        }
+
+        case "set-target":
+          saveAmounts();
+          S.transfer.targetId = param;
+          // Remove from sources if selected
+          S.transfer.sources.delete(param);
+          delete S.transfer.amounts[param];
           render();
           break;
 
@@ -521,9 +711,9 @@
         }
 
         case "do-transfer": {
-          readTarget();
           saveAmounts();
-          if (!S.transfer.targetId || S.transfer.sources.size === 0) {
+          const selectedSources = S.accounts.filter((a) => S.transfer.sources.has(a.id) && a.id !== S.transfer.targetId);
+          if (!S.transfer.targetId || selectedSources.length === 0) {
             S.error = "Select source and target accounts";
             render();
             return;
@@ -532,15 +722,14 @@
           S.loading = true;
           render();
           const results = [];
-          for (const srcId of S.transfer.sources) {
-            const src = S.accounts.find((a) => a.id === srcId);
-            const amount = S.transfer.amounts[srcId] || 0;
+          for (const src of selectedSources) {
+            const amount = S.transfer.amounts[src.id] || 0;
             if (amount <= 0) continue;
             try {
-              await execTransfer(srcId, S.transfer.targetId, amount, src?.description || "", target?.description || "");
-              results.push({ from: src?.nickname || srcId, to: target?.nickname || "", amount, success: true });
+              await execTransfer(src.id, S.transfer.targetId, amount, src.description || "", target?.description || "");
+              results.push({ from: src.nickname, to: target?.nickname || "", amount, success: true });
             } catch (err) {
-              results.push({ from: src?.nickname || srcId, to: target?.nickname || "", amount, success: false, error: err.message });
+              results.push({ from: src.nickname, to: target?.nickname || "", amount, success: false, error: err.message });
             }
           }
           S.loading = false;
@@ -564,27 +753,22 @@
   }
 
   function saveAmounts() {
-    root.querySelectorAll(".src-amt").forEach((el) => {
+    root.querySelectorAll(".tf-amt").forEach((el) => {
       S.transfer.amounts[el.dataset.account] = parseFloat(el.value) || 0;
     });
   }
 
-  function readTarget() {
-    const tgt = root.querySelector("#bf-target");
-    if (tgt) S.transfer.targetId = tgt.value;
-  }
-
   // ── Account Loading ─────────────────────────────────────────────────
-  let loading = false;
+  let acctLoading = false;
   async function loadAccounts() {
-    if (loading) return;
-    loading = true;
+    if (acctLoading) return;
+    acctLoading = true;
     try {
       S.accounts = await getAccounts();
     } catch (e) {
       S.error = e.message;
     }
-    loading = false;
+    acctLoading = false;
     render();
   }
 
@@ -593,7 +777,6 @@
     if (!root || !S.visible) return;
     updateStatus();
     if (!hasToken() && token) {
-      // Token just expired
       S.accounts = [];
       render();
     }
