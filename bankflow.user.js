@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BankFlow
 // @namespace    bankflow
-// @version      2.3.0
+// @version      2.4.0
 // @description  Transfer & merge assistant for UCU and BCU credit union accounts
 // @match        https://online.ucu.org/*
 // @match        https://safe.bcu.org/*
@@ -27,33 +27,88 @@
 
   if (!BANK && !IS_FLUZ) return;
 
-  // ── Fluz: Capture pending balance and exit ──────────────────────────
+  // ── Fluz: Capture per-account pending balances and exit ─────────────
   if (IS_FLUZ) {
-    // Intercept fetch responses to capture pending_cash_balance from Fluz route data
+    // Minimal turbo-stream parser (Remix v2 single-fetch format)
+    function parseTurboStream(text) {
+      const lines = text.split("\n").filter((l) => l.length > 0);
+      if (lines.length === 0) return null;
+      let flat;
+      try { flat = new Function("return " + lines[0])(); } catch { return null; }
+      if (!Array.isArray(flat)) return flat;
+      for (let i = 1; i < lines.length; i++) {
+        const m = lines[i].match(/^P(\d+):([\s\S]*)/);
+        if (!m) continue;
+        try {
+          const parsed = new Function("return " + m[2])();
+          if (Array.isArray(parsed)) { const base = flat.length; for (const item of parsed) flat.push(item); flat[parseInt(m[1])] = flat[base]; }
+          else flat[parseInt(m[1])] = parsed;
+        } catch {}
+      }
+      const cache = new Map();
+      function resolveNeg(idx) { return idx === -1 ? undefined : idx === -2 ? null : idx === -3 ? NaN : null; }
+      function deref(val, d) {
+        if (d > 30 || val == null || typeof val !== "object") return val;
+        if (Array.isArray(val)) return val.map((v) => typeof v === "number" ? derefIdx(v, d + 1) : deref(v, d + 1));
+        const keys = Object.keys(val);
+        const isRef = keys.length > 0 && keys.every((k) => k.startsWith("_") || k.startsWith("-"));
+        if (!isRef) return val;
+        const result = {};
+        for (const k of keys) {
+          const key = flat[parseInt(k.slice(1))];
+          const vi = val[k];
+          result[typeof key === "string" ? key : k] = typeof vi === "number" ? (vi < 0 ? resolveNeg(vi) : derefIdx(vi, d + 1)) : deref(vi, d + 1);
+        }
+        return result;
+      }
+      function derefIdx(idx, d) { if (idx < 0) return resolveNeg(idx); if (cache.has(idx)) return cache.get(idx); const r = deref(flat[idx], d); cache.set(idx, r); return r; }
+      return deref(flat[0], 0);
+    }
+
+    function extractFluzPending(text) {
+      try {
+        const parsed = parseTurboStream(text);
+        if (!parsed || typeof parsed !== "object") return null;
+        // Walk through route data to find user_cash_balances
+        for (const routeKey of Object.keys(parsed)) {
+          const route = parsed[routeKey];
+          const data = route?.data || route;
+          const bal = data?.user?.balance || data?.balance;
+          if (!bal?.user_cash_balances) continue;
+          const accounts = bal.user_cash_balances;
+          if (!Array.isArray(accounts)) continue;
+          const pending = [];
+          for (const cb of accounts) {
+            const avail = cb.available_cash_balance ?? 0;
+            const total = cb.total_cash_balance ?? 0;
+            const p = total - avail;
+            if (p > 0.005) {
+              pending.push({ nickname: cb.nickname || "Main account", amount: p });
+            }
+          }
+          if (pending.length > 0) return pending;
+        }
+      } catch {}
+      return null;
+    }
+
+    function storeFluzPending(text) {
+      const pending = extractFluzPending(text);
+      if (pending) GM_setValue("fluz_pending", { accounts: pending, ts: Date.now() });
+    }
+
+    // Intercept fetch
     const origFetch = unsafeWindow.fetch;
     unsafeWindow.fetch = function (input, init) {
       const result = origFetch.apply(this, arguments);
       result.then((resp) => {
-        // Only intercept .data turbo-stream responses (Remix single-fetch)
         const url = typeof input === "string" ? input : input?.url || "";
         if (!url.includes(".data")) return;
-        resp.clone().text().then((text) => {
-          try {
-            // Look for pending_cash_balance in the turbo-stream response
-            // The format varies but the field name is consistent
-            const pendingMatch = text.match(/"pending_cash_balance"\s*[:,]\s*([\d.]+)/);
-            if (pendingMatch) {
-              const pending = parseFloat(pendingMatch[1]);
-              if (!isNaN(pending)) {
-                GM_setValue("fluz_pending", { amount: pending, ts: Date.now() });
-              }
-            }
-          } catch {}
-        }).catch(() => {});
+        resp.clone().text().then(storeFluzPending).catch(() => {});
       }).catch(() => {});
       return result;
     };
-    // Also intercept XHR
+    // Intercept XHR
     const origXHROpen = unsafeWindow.XMLHttpRequest.prototype.open;
     const origXHRSend = unsafeWindow.XMLHttpRequest.prototype.send;
     unsafeWindow.XMLHttpRequest.prototype.open = function () {
@@ -62,15 +117,7 @@
     };
     unsafeWindow.XMLHttpRequest.prototype.send = function () {
       if (this._bfUrl?.includes?.(".data")) {
-        this.addEventListener("load", function () {
-          try {
-            const m = this.responseText?.match(/"pending_cash_balance"\s*[:,]\s*([\d.]+)/);
-            if (m) {
-              const pending = parseFloat(m[1]);
-              if (!isNaN(pending)) GM_setValue("fluz_pending", { amount: pending, ts: Date.now() });
-            }
-          } catch {}
-        });
+        this.addEventListener("load", function () { storeFluzPending(this.responseText || ""); });
       }
       return origXHRSend.apply(this, arguments);
     };
@@ -78,12 +125,12 @@
   }
 
   // ── Fluz Pending Balance (read from GM storage) ─────────────────────
+  // Returns array of { nickname, amount } or empty array
   function getFluzPending() {
     const data = GM_getValue("fluz_pending", null);
-    if (!data) return 0;
-    // Only use if less than 1 hour old
-    if (Date.now() - data.ts > 3600_000) return 0;
-    return data.amount || 0;
+    if (!data) return [];
+    if (Date.now() - data.ts > 3600_000) return [];
+    return data.accounts || [];
   }
 
   // Listen for updates from the Fluz tab
@@ -270,7 +317,7 @@
     td:last-child { text-align: right; font-variant-numeric: tabular-nums; }
     tr:not(:last-child) td { border-bottom: 1px solid rgba(51,65,85,.4); }
     .total td { border-top: 1px solid var(--border); font-weight: 600; padding-top: 8px; }
-    .fluz-note { color: var(--dim); font-weight: 400; font-size: 11px; }
+    .fluz-row td { color: var(--muted); font-size: 12px; font-style: italic; }
 
     /* Buttons */
     .btn {
@@ -603,6 +650,7 @@
     }
 
     const fluzPending = getFluzPending();
+    const fluzTotal = fluzPending.reduce((s, f) => s + f.amount, 0);
 
     let h = `<div class="section-hdr"><span>Accounts</span>
       <button class="btn btn-s btn-sm" data-action="refresh">Refresh</button></div>`;
@@ -612,8 +660,13 @@
       total += a.availableBalance;
       h += `<tr><td>${esc(a.nickname)}</td><td>${fmtCurrency(a.availableBalance)}</td></tr>`;
     }
-    const netTotal = fluzPending > 0 ? total - fluzPending : total;
-    h += `<tr class="total"><td>Total${fluzPending > 0 ? `<span class="fluz-note"> (−${fmtCurrency(fluzPending)} Fluz pending)</span>` : ""}</td><td>${fmtCurrency(netTotal)}</td></tr>`;
+    if (fluzPending.length > 0) {
+      for (const f of fluzPending) {
+        h += `<tr class="fluz-row"><td>Fluz · ${esc(f.nickname)}</td><td>−${fmtCurrency(f.amount)}</td></tr>`;
+      }
+    }
+    const netTotal = total - fluzTotal;
+    h += `<tr class="total"><td>Total</td><td>${fmtCurrency(netTotal)}</td></tr>`;
     h += "</tbody></table>";
     h += '<div class="actions"><button class="btn btn-p" data-action="show-transfer">Transfer</button></div>';
     return h;
@@ -768,7 +821,14 @@
     // Fluz section
     h += '<div class="dev-section">';
     h += '<div class="dev-section-title">Fluz Integration</div>';
-    h += `<div class="dev-row"><span class="dev-label">Pending balance</span><span class="dev-value">${fluzData ? fmtCurrency(fluzData.amount) : "—"}</span></div>`;
+    const fluzAccounts = fluzData?.accounts || [];
+    if (fluzAccounts.length > 0) {
+      for (const f of fluzAccounts) {
+        h += `<div class="dev-row"><span class="dev-label">${esc(f.nickname)}</span><span class="dev-value">${fmtCurrency(f.amount)}</span></div>`;
+      }
+    } else {
+      h += `<div class="dev-row"><span class="dev-label">Pending</span><span class="dev-value">—</span></div>`;
+    }
     h += `<div class="dev-row"><span class="dev-label">Last updated</span><span class="dev-value">${fluzAgeLabel}</span></div>`;
     h += '<div class="dev-actions">';
     h += '<button class="btn btn-s btn-sm" data-action="dev-set-fluz">Set Fluz Pending</button>';
@@ -789,7 +849,7 @@
     h += "</div></div>";
 
     // Version
-    h += `<div style="text-align:center;font-size:10px;color:var(--border);margin-top:8px">BankFlow v2.3.0</div>`;
+    h += `<div style="text-align:center;font-size:10px;color:var(--border);margin-top:8px">BankFlow v2.4.0</div>`;
 
     return h;
   }
@@ -933,7 +993,7 @@
         case "dev-set-fluz": {
           const input = root.querySelector("#dev-fluz-amt");
           const amt = parseFloat(input?.value) || 500;
-          GM_setValue("fluz_pending", { amount: amt, ts: Date.now() });
+          GM_setValue("fluz_pending", { accounts: [{ nickname: "Test Account", amount: amt }], ts: Date.now() });
           render();
           break;
         }
