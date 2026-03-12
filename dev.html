@@ -5,75 +5,195 @@
   <title>BankFlow Dev</title>
   <style>
     body { margin: 0; background: #0a0a0a; color: #888; font-family: system-ui; }
-    .info { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); text-align: center; }
-    .info h1 { color: #3b82f6; font-size: 18px; margin-bottom: 8px; }
-    .info p { font-size: 13px; line-height: 1.6; }
-    .info button { margin-top: 16px; padding: 8px 20px; background: #3b82f6; color: #fff;
-      border: none; border-radius: 6px; font-size: 14px; cursor: pointer; }
-    .info button:hover { background: #2563eb; }
-    kbd { background: #222; padding: 2px 6px; border-radius: 3px; font-size: 12px; }
+    .dev-bar {
+      position: fixed; bottom: 0; left: 0; right: 0; z-index: 999999;
+      background: #111; border-top: 1px solid #333; padding: 8px 16px;
+      display: flex; gap: 10px; align-items: center; font-size: 12px;
+    }
+    .dev-bar button {
+      padding: 4px 12px; background: #222; color: #aaa; border: 1px solid #444;
+      border-radius: 4px; font-size: 11px; cursor: pointer;
+    }
+    .dev-bar button:hover { background: #333; color: #fff; }
+    .dev-bar label { color: #666; }
+    .dev-bar input { width: 80px; background: #1a1a1a; color: #ccc; border: 1px solid #444;
+      border-radius: 3px; padding: 2px 6px; font-size: 11px; }
+    .dev-info {
+      position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+      text-align: center; pointer-events: none; opacity: 0.4;
+    }
+    .dev-info h1 { color: #3b82f6; font-size: 16px; margin-bottom: 4px; }
+    .dev-info p { font-size: 11px; line-height: 1.5; }
   </style>
 </head>
 <body>
-  <div class="info">
+  <div class="dev-info">
     <h1>BankFlow Dev Mode</h1>
-    <p>This page simulates a bank site for UI debugging.<br/>
-    Click the button below to inject a fake token, then use the <strong>BF</strong> button.</p>
-    <button onclick="injectFakeToken()">Simulate Login</button>
-    <p style="margin-top:12px;font-size:11px;color:#555">
-      The script detects the bank from hostname. Since this isn't a real bank site,<br/>
-      we patch the bank detection to allow running locally.
-    </p>
+    <p>Mock bank environment — the BF button should appear in the bottom-right corner.</p>
+  </div>
+
+  <div class="dev-bar">
+    <span style="color:#3b82f6;font-weight:600">DEV</span>
+    <button onclick="resetToken()">Reset Token</button>
+    <button onclick="expireToken()">Expire Token</button>
+    <button onclick="toggleFluz()">Toggle Fluz Pending</button>
+    <label>Fluz $<input id="fluz-amt" type="number" value="500" step="50"></label>
+    <button onclick="addAccount()">+ Account</button>
   </div>
 
   <script>
-    // Patch: pretend we're on a bank site for local dev
-    // The userscript checks location.hostname, so we override BANK detection
-    // by injecting a script that sets up the bank before the userscript runs.
+    // ── Mock GM_* APIs ──────────────────────────────────────────────────
+    const gmStorage = {};
+    const gmListeners = {};
 
-    // We'll load the userscript via a modified approach:
-    // 1. Override the bank detection to accept localhost
-    // 2. Provide a way to inject a fake token
+    window.GM_setValue = function (key, value) {
+      const old = gmStorage[key];
+      gmStorage[key] = value;
+      (gmListeners[key] || []).forEach(fn => fn(key, old, value, false));
+    };
+    window.GM_getValue = function (key, def) {
+      return key in gmStorage ? gmStorage[key] : def;
+    };
+    window.GM_addValueChangeListener = function (key, fn) {
+      if (!gmListeners[key]) gmListeners[key] = [];
+      gmListeners[key].push(fn);
+    };
 
-    // Since the userscript wraps in an IIFE and checks hostname,
-    // we need to patch it for dev. We'll eval a modified version.
+    // unsafeWindow = window in dev (no sandbox)
+    window.unsafeWindow = window;
 
-    let fakeTokenInjected = false;
+    // ── Mock Data ───────────────────────────────────────────────────────
+    let nextAcctId = 5;
+    const mockAccounts = [
+      { id: "acct-1", nickname: "Primary Checking", suffix: "0001", availableBalance: 3245.67, actualBalance: 3245.67, primaryMapping: "C", description: "Checking" },
+      { id: "acct-2", nickname: "Savings", suffix: "0002", availableBalance: 12500.00, actualBalance: 12500.00, primaryMapping: "S", description: "Savings" },
+      { id: "acct-3", nickname: "Emergency Fund", suffix: "0003", availableBalance: 8750.33, actualBalance: 8750.33, primaryMapping: "S", description: "Savings" },
+      { id: "acct-4", nickname: "Vacation", suffix: "0004", availableBalance: 0, actualBalance: 0, primaryMapping: "S", description: "Savings" },
+    ];
 
+    const transferLog = [];
+
+    // ── Mock Fetch ──────────────────────────────────────────────────────
+    const realFetch = window.fetch;
+
+    function mockFetch(input, init) {
+      const url = typeof input === "string" ? input : input?.url || "";
+      const method = init?.method?.toUpperCase() || "GET";
+
+      // Mock accounts endpoint
+      if (url.includes("/gateway/web/accounts") && method === "GET") {
+        console.log("[BF-Dev] Mock GET /gateway/web/accounts");
+        return Promise.resolve(new Response(JSON.stringify({ accounts: mockAccounts }), {
+          status: 200, headers: { "Content-Type": "application/json" },
+        }));
+      }
+
+      // Mock transfer endpoint
+      if (url.includes("/gateway/web/transfer-scheduler") && method === "POST") {
+        const body = JSON.parse(init?.body || "{}");
+        console.log("[BF-Dev] Mock POST /gateway/web/transfer-scheduler", body);
+        transferLog.push(body);
+
+        // Simulate balance change
+        const from = mockAccounts.find(a => a.id === body.fromAccount?.id);
+        const to = mockAccounts.find(a => a.id === body.toAccount?.id);
+        if (from && to && body.amount) {
+          from.availableBalance -= body.amount;
+          from.actualBalance -= body.amount;
+          to.availableBalance += body.amount;
+          to.actualBalance += body.amount;
+        }
+
+        return Promise.resolve(new Response(JSON.stringify({ success: true }), {
+          status: 200, headers: { "Content-Type": "application/json" },
+        }));
+      }
+
+      // All other requests pass through (or 404)
+      return realFetch(input, init).catch(() =>
+        new Response("", { status: 404 })
+      );
+    }
+
+    // Install mock fetch BEFORE loading the script (it captures origFetch at load time)
+    window.fetch = mockFetch;
+
+    // ── Load Userscript ─────────────────────────────────────────────────
     async function loadScript() {
-      const resp = await fetch('bankflow.user.js');
+      const resp = await realFetch("bankflow.user.js");
       let code = await resp.text();
 
-      // Strip the userscript header
-      code = code.replace(/\/\/ ==UserScript==[\s\S]*?\/\/ ==\/UserScript==/, '');
+      // Strip Tampermonkey header
+      code = code.replace(/\/\/ ==UserScript==[\s\S]*?\/\/ ==\/UserScript==/, "");
 
       // Patch bank detection to accept localhost
       code = code.replace(
-        'const BANK = BANK_MAP[location.hostname];',
+        "const BANK = BANK_MAP[location.hostname];",
         'const BANK = BANK_MAP[location.hostname] || { id: "ucu", name: "UCU", full: "University Credit Union" };'
       );
-
-      // Patch: skip the "if (!BANK) return;" check is already handled by the fallback above
 
       eval(code);
     }
 
-    function injectFakeToken() {
-      // Simulate a fetch call with an Authorization header to trigger token capture
-      const origFetch = window.__origFetch || window.fetch;
-      window.__origFetch = origFetch;
+    // ── Auto-inject Token ───────────────────────────────────────────────
+    // After script loads, fire a fake fetch with Authorization header to trigger interception
+    async function init() {
+      await loadScript();
 
-      // Make a fake request that our interceptor will see
-      fetch('/fake-api', {
-        headers: { 'Authorization': 'Bearer fake-dev-token-12345' }
-      }).catch(() => {});
-
-      fakeTokenInjected = true;
-      document.querySelector('.info button').textContent = 'Token Injected!';
-      document.querySelector('.info button').disabled = true;
+      // Small delay to let interceptors install
+      setTimeout(() => {
+        fetch("/fake-api", {
+          headers: { Authorization: "Bearer dev-mock-token-00000" },
+        }).catch(() => {});
+        console.log("[BF-Dev] Token injected, mock accounts ready");
+      }, 50);
     }
 
-    loadScript();
+    // ── Dev Controls ────────────────────────────────────────────────────
+    function resetToken() {
+      fetch("/fake-api", {
+        headers: { Authorization: "Bearer dev-mock-token-" + Date.now() },
+      }).catch(() => {});
+      console.log("[BF-Dev] Token reset");
+    }
+
+    function expireToken() {
+      // Trigger a 401 to simulate expiry — next API call will fail
+      const origMock = window.fetch;
+      window.fetch = function (input, init) {
+        if (typeof input === "string" && input.includes("/gateway/web/")) {
+          window.fetch = origMock; // restore after one call
+          return Promise.resolve(new Response("", { status: 401 }));
+        }
+        return origMock(input, init);
+      };
+      console.log("[BF-Dev] Next API call will return 401");
+    }
+
+    let fluzEnabled = false;
+    function toggleFluz() {
+      fluzEnabled = !fluzEnabled;
+      if (fluzEnabled) {
+        const amt = parseFloat(document.getElementById("fluz-amt").value) || 500;
+        GM_setValue("fluz_pending", { amount: amt, ts: Date.now() });
+        console.log("[BF-Dev] Fluz pending set to $" + amt);
+      } else {
+        GM_setValue("fluz_pending", null);
+        console.log("[BF-Dev] Fluz pending cleared");
+      }
+    }
+
+    function addAccount() {
+      const id = "acct-" + nextAcctId++;
+      const bal = Math.round(Math.random() * 5000 * 100) / 100;
+      mockAccounts.push({
+        id, nickname: "Account " + id, suffix: String(nextAcctId).padStart(4, "0"),
+        availableBalance: bal, actualBalance: bal, primaryMapping: "S", description: "Savings",
+      });
+      console.log("[BF-Dev] Added account " + id + " with $" + bal);
+    }
+
+    init();
   </script>
 </body>
 </html>
