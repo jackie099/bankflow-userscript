@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BankFlow
 // @namespace    bankflow
-// @version      2.4.0
+// @version      2.5.0
 // @description  Transfer & merge assistant for UCU and BCU credit union accounts
 // @match        https://online.ucu.org/*
 // @match        https://safe.bcu.org/*
@@ -986,7 +986,7 @@
     h += "</div></div>";
 
     // Version
-    h += `<div style="text-align:center;font-size:10px;color:var(--border);margin-top:8px">BankFlow v2.4.0</div>`;
+    h += `<div style="text-align:center;font-size:10px;color:var(--border);margin-top:8px">BankFlow v2.5.0</div>`;
 
     return h;
   }
