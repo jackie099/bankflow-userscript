@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BankFlow
 // @namespace    bankflow
-// @version      2.5.2
+// @version      2.5.3
 // @description  Transfer & merge assistant for UCU and BCU credit union accounts
 // @match        https://online.ucu.org/*
 // @match        https://safe.bcu.org/*
@@ -135,14 +135,16 @@
 
     // ── Fluz Debug Panel ────────────────────────────────────────────────
     let fluzRoot;
+    const pdoc = unsafeWindow.document;
+
     function createFluzPanel() {
-      const host = document.createElement("div");
+      const host = pdoc.createElement("div");
       host.id = "bankflow-fluz-host";
       host.style.cssText = "position:fixed;z-index:2147483647;top:0;left:0;width:0;height:0;pointer-events:none";
-      document.body.appendChild(host);
+      pdoc.body.appendChild(host);
       fluzRoot = host.attachShadow({ mode: "closed" });
 
-      const style = document.createElement("style");
+      const style = pdoc.createElement("style");
       style.textContent = `
         :host { --bg: #0f172a; --surface: #1e293b; --border: #334155; --text: #e2e8f0;
           --muted: #94a3b8; --accent: #3b82f6; --green: #22c55e; --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
@@ -186,7 +188,7 @@
       `;
       fluzRoot.appendChild(style);
 
-      const btn = document.createElement("button");
+      const btn = pdoc.createElement("button");
       btn.id = "bf-fluz-toggle";
       btn.textContent = "BF";
       btn.addEventListener("click", () => {
@@ -196,7 +198,7 @@
       });
       fluzRoot.appendChild(btn);
 
-      const panel = document.createElement("div");
+      const panel = pdoc.createElement("div");
       panel.id = "bf-fluz-panel";
       panel.innerHTML = `
         <div class="hdr">
@@ -248,8 +250,8 @@
     }
 
     function initFluzPanel() {
-      if (document.getElementById("bankflow-fluz-host")) return;
-      if (!document.body) return;
+      if (pdoc.getElementById("bankflow-fluz-host")) return;
+      if (!pdoc.body) return;
       fluzRoot = null;
       createFluzPanel();
       logFluz("BankFlow Fluz listener active");
@@ -257,7 +259,7 @@
 
     // Remix hydration wipes the DOM — poll to re-inject
     setInterval(() => {
-      if (!document.getElementById("bankflow-fluz-host") && document.body) {
+      if (!pdoc.getElementById("bankflow-fluz-host") && pdoc.body) {
         initFluzPanel();
       }
     }, 500);
@@ -990,7 +992,7 @@
     h += "</div></div>";
 
     // Version
-    h += `<div style="text-align:center;font-size:10px;color:var(--border);margin-top:8px">BankFlow v2.5.2</div>`;
+    h += `<div style="text-align:center;font-size:10px;color:var(--border);margin-top:8px">BankFlow v2.5.3</div>`;
 
     return h;
   }
