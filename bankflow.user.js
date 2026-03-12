@@ -92,19 +92,29 @@
       return null;
     }
 
-    function storeFluzPending(text) {
+    // ── Fluz Debug Log ──────────────────────────────────────────────────
+    const fluzLog = [];
+    function logFluz(msg) { fluzLog.push({ ts: Date.now(), msg }); if (fluzLog.length > 50) fluzLog.shift(); renderFluzPanel(); }
+
+    function storeFluzPending(text, url) {
+      logFluz(`Intercepted: ${url} (${text.length} chars)`);
       const pending = extractFluzPending(text);
-      if (pending) GM_setValue("fluz_pending", { accounts: pending, ts: Date.now() });
+      if (pending) {
+        GM_setValue("fluz_pending", { accounts: pending, ts: Date.now() });
+        logFluz(`Stored: ${pending.map((p) => p.nickname + " $" + p.amount.toFixed(2)).join(", ")}`);
+      } else {
+        logFluz("No user_cash_balances with pending found");
+      }
     }
 
     // Intercept fetch
     const origFetch = unsafeWindow.fetch;
     unsafeWindow.fetch = function (input, init) {
       const result = origFetch.apply(this, arguments);
+      const url = typeof input === "string" ? input : input?.url || "";
       result.then((resp) => {
-        const url = typeof input === "string" ? input : input?.url || "";
         if (!url.includes(".data")) return;
-        resp.clone().text().then(storeFluzPending).catch(() => {});
+        resp.clone().text().then((text) => storeFluzPending(text, url)).catch(() => {});
       }).catch(() => {});
       return result;
     };
@@ -117,11 +127,138 @@
     };
     unsafeWindow.XMLHttpRequest.prototype.send = function () {
       if (this._bfUrl?.includes?.(".data")) {
-        this.addEventListener("load", function () { storeFluzPending(this.responseText || ""); });
+        const bfUrl = this._bfUrl;
+        this.addEventListener("load", function () { storeFluzPending(this.responseText || "", bfUrl); });
       }
       return origXHRSend.apply(this, arguments);
     };
-    return; // Don't inject BankFlow UI on Fluz
+
+    // ── Fluz Debug Panel ────────────────────────────────────────────────
+    let fluzRoot;
+    function createFluzPanel() {
+      const host = document.createElement("div");
+      host.id = "bankflow-fluz-host";
+      host.style.cssText = "position:fixed;z-index:2147483647;top:0;left:0;width:0;height:0;pointer-events:none";
+      document.body.appendChild(host);
+      fluzRoot = host.attachShadow({ mode: "closed" });
+
+      const style = document.createElement("style");
+      style.textContent = `
+        :host { --bg: #0f172a; --surface: #1e293b; --border: #334155; --text: #e2e8f0;
+          --muted: #94a3b8; --accent: #3b82f6; --green: #22c55e; --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+        * { box-sizing: border-box; }
+        #bf-fluz-toggle {
+          pointer-events: auto; position: fixed; bottom: 20px; right: 20px;
+          width: 44px; height: 44px; border-radius: 50%; border: none;
+          background: #8b5cf6; color: #fff; font: bold 14px var(--font);
+          cursor: pointer; box-shadow: 0 4px 12px rgba(0,0,0,.4); z-index: 1;
+          transition: background .15s, transform .15s;
+        }
+        #bf-fluz-toggle:hover { background: #7c3aed; transform: scale(1.08); }
+        #bf-fluz-panel {
+          pointer-events: auto; display: none; flex-direction: column;
+          position: fixed; bottom: 76px; right: 20px; width: 360px; max-height: 70vh;
+          background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+          box-shadow: 0 8px 32px rgba(0,0,0,.5); font: 12px var(--font); color: var(--text);
+          overflow: hidden;
+        }
+        .hdr {
+          display: flex; align-items: center; justify-content: space-between;
+          padding: 10px 14px; border-bottom: 1px solid var(--border);
+        }
+        .hdr-title { font-weight: 700; font-size: 13px; }
+        .close { background: none; border: none; color: var(--muted); font-size: 20px; cursor: pointer; padding: 0 4px; line-height: 1; }
+        .close:hover { color: var(--text); }
+        .content { padding: 12px 14px; overflow-y: auto; flex: 1; }
+        .section { margin-bottom: 12px; }
+        .section-title { font-size: 10px; text-transform: uppercase; letter-spacing: .5px; color: var(--muted); margin-bottom: 6px; font-weight: 600; }
+        .row { display: flex; align-items: center; justify-content: space-between; padding: 4px 0; font-size: 12px; border-bottom: 1px solid rgba(51,65,85,.3); }
+        .row:last-child { border-bottom: none; }
+        .label { color: var(--muted); }
+        .value { color: var(--text); font-variant-numeric: tabular-nums; }
+        .value.ok { color: var(--green); }
+        .log { font-family: monospace; font-size: 10px; max-height: 200px; overflow-y: auto;
+          background: var(--bg); border: 1px solid var(--border); border-radius: 4px; padding: 8px; }
+        .log-entry { padding: 2px 0; border-bottom: 1px solid rgba(51,65,85,.2); color: var(--muted); word-break: break-all; }
+        .log-entry:last-child { border-bottom: none; }
+        .log-ts { color: var(--border); }
+        .empty { color: var(--border); font-style: italic; }
+      `;
+      fluzRoot.appendChild(style);
+
+      const btn = document.createElement("button");
+      btn.id = "bf-fluz-toggle";
+      btn.textContent = "BF";
+      btn.addEventListener("click", () => {
+        const p = fluzRoot.querySelector("#bf-fluz-panel");
+        p.style.display = p.style.display === "flex" ? "none" : "flex";
+        if (p.style.display === "flex") renderFluzPanel();
+      });
+      fluzRoot.appendChild(btn);
+
+      const panel = document.createElement("div");
+      panel.id = "bf-fluz-panel";
+      panel.innerHTML = `
+        <div class="hdr">
+          <span class="hdr-title">BankFlow · Fluz</span>
+          <button class="close" id="bf-fluz-close">&times;</button>
+        </div>
+        <div class="content" id="bf-fluz-content"></div>
+      `;
+      fluzRoot.appendChild(panel);
+      fluzRoot.querySelector("#bf-fluz-close").addEventListener("click", () => { panel.style.display = "none"; });
+    }
+
+    function renderFluzPanel() {
+      if (!fluzRoot) return;
+      const el = fluzRoot.querySelector("#bf-fluz-content");
+      if (!el) return;
+
+      const data = GM_getValue("fluz_pending", null);
+      const accounts = data?.accounts || [];
+      const age = data ? Math.round((Date.now() - data.ts) / 1000) : null;
+      const ageLabel = age !== null ? (age < 60 ? age + "s ago" : Math.round(age / 60) + "m ago") : "—";
+
+      let h = '<div class="section">';
+      h += '<div class="section-title">Stored Pending</div>';
+      if (accounts.length > 0) {
+        for (const a of accounts) {
+          h += `<div class="row"><span class="label">${a.nickname}</span><span class="value ok">$${a.amount.toFixed(2)}</span></div>`;
+        }
+        h += `<div class="row"><span class="label">Updated</span><span class="value">${ageLabel}</span></div>`;
+      } else {
+        h += '<div class="empty">No pending data captured yet</div>';
+      }
+      h += "</div>";
+
+      h += '<div class="section">';
+      h += '<div class="section-title">Intercept Log</div>';
+      h += '<div class="log">';
+      if (fluzLog.length === 0) {
+        h += '<div class="empty">No .data requests intercepted yet. Navigate to a page with balance data.</div>';
+      } else {
+        for (const entry of fluzLog) {
+          const t = new Date(entry.ts).toLocaleTimeString();
+          h += `<div class="log-entry"><span class="log-ts">${t}</span> ${entry.msg}</div>`;
+        }
+      }
+      h += "</div></div>";
+
+      el.innerHTML = h;
+    }
+
+    function initFluzPanel() {
+      if (document.getElementById("bankflow-fluz-host")) return;
+      createFluzPanel();
+      logFluz("BankFlow Fluz listener active");
+    }
+
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", initFluzPanel);
+    } else {
+      initFluzPanel();
+    }
+    return; // Don't inject bank UI on Fluz
   }
 
   // ── Fluz Pending Balance (read from GM storage) ─────────────────────
