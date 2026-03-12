@@ -1,11 +1,15 @@
 // ==UserScript==
 // @name         BankFlow
 // @namespace    bankflow
-// @version      2.1.0
+// @version      2.2.0
 // @description  Transfer & merge assistant for UCU and BCU credit union accounts
 // @match        https://online.ucu.org/*
 // @match        https://safe.bcu.org/*
-// @grant        none
+// @match        https://fluz.app/*
+// @grant        GM_setValue
+// @grant        GM_getValue
+// @grant        GM_addValueChangeListener
+// @grant        unsafeWindow
 // @noframes
 // @run-at       document-start
 // ==/UserScript==
@@ -13,13 +17,79 @@
 (function () {
   "use strict";
 
-  // ── Bank Detection ──────────────────────────────────────────────────
+  // ── Site Detection ──────────────────────────────────────────────────
   const BANK_MAP = {
     "online.ucu.org": { id: "ucu", name: "UCU", full: "University Credit Union" },
     "safe.bcu.org": { id: "bcu", name: "BCU", full: "Baxter Credit Union" },
   };
   const BANK = BANK_MAP[location.hostname];
-  if (!BANK) return;
+  const IS_FLUZ = location.hostname === "fluz.app";
+
+  if (!BANK && !IS_FLUZ) return;
+
+  // ── Fluz: Capture pending balance and exit ──────────────────────────
+  if (IS_FLUZ) {
+    // Intercept fetch responses to capture pending_cash_balance from Fluz route data
+    const origFetch = unsafeWindow.fetch;
+    unsafeWindow.fetch = function (input, init) {
+      const result = origFetch.apply(this, arguments);
+      result.then((resp) => {
+        // Only intercept .data turbo-stream responses (Remix single-fetch)
+        const url = typeof input === "string" ? input : input?.url || "";
+        if (!url.includes(".data")) return;
+        resp.clone().text().then((text) => {
+          try {
+            // Look for pending_cash_balance in the turbo-stream response
+            // The format varies but the field name is consistent
+            const pendingMatch = text.match(/"pending_cash_balance"\s*[:,]\s*([\d.]+)/);
+            if (pendingMatch) {
+              const pending = parseFloat(pendingMatch[1]);
+              if (!isNaN(pending)) {
+                GM_setValue("fluz_pending", { amount: pending, ts: Date.now() });
+              }
+            }
+          } catch {}
+        }).catch(() => {});
+      }).catch(() => {});
+      return result;
+    };
+    // Also intercept XHR
+    const origXHROpen = unsafeWindow.XMLHttpRequest.prototype.open;
+    const origXHRSend = unsafeWindow.XMLHttpRequest.prototype.send;
+    unsafeWindow.XMLHttpRequest.prototype.open = function () {
+      this._bfUrl = arguments[1] || "";
+      return origXHROpen.apply(this, arguments);
+    };
+    unsafeWindow.XMLHttpRequest.prototype.send = function () {
+      if (this._bfUrl?.includes?.(".data")) {
+        this.addEventListener("load", function () {
+          try {
+            const m = this.responseText?.match(/"pending_cash_balance"\s*[:,]\s*([\d.]+)/);
+            if (m) {
+              const pending = parseFloat(m[1]);
+              if (!isNaN(pending)) GM_setValue("fluz_pending", { amount: pending, ts: Date.now() });
+            }
+          } catch {}
+        });
+      }
+      return origXHRSend.apply(this, arguments);
+    };
+    return; // Don't inject BankFlow UI on Fluz
+  }
+
+  // ── Fluz Pending Balance (read from GM storage) ─────────────────────
+  function getFluzPending() {
+    const data = GM_getValue("fluz_pending", null);
+    if (!data) return 0;
+    // Only use if less than 1 hour old
+    if (Date.now() - data.ts > 3600_000) return 0;
+    return data.amount || 0;
+  }
+
+  // Listen for updates from the Fluz tab
+  GM_addValueChangeListener("fluz_pending", (_key, _old, _new, remote) => {
+    if (remote && S.visible) render();
+  });
 
   // ── Token Interception ──────────────────────────────────────────────
   let token = null;
@@ -49,16 +119,16 @@
     return `${m}:${String(s).padStart(2, "0")}`;
   }
 
-  // Intercept XMLHttpRequest
-  const origSetRequestHeader = XMLHttpRequest.prototype.setRequestHeader;
-  XMLHttpRequest.prototype.setRequestHeader = function (name, value) {
+  // Intercept XMLHttpRequest (use unsafeWindow for @grant mode)
+  const origSetRequestHeader = unsafeWindow.XMLHttpRequest.prototype.setRequestHeader;
+  unsafeWindow.XMLHttpRequest.prototype.setRequestHeader = function (name, value) {
     if (name.toLowerCase() === "authorization") captureToken(value);
     return origSetRequestHeader.call(this, name, value);
   };
 
   // Intercept fetch
-  const origFetch = window.fetch;
-  window.fetch = function (input, init) {
+  const origFetch = unsafeWindow.fetch;
+  unsafeWindow.fetch = function (input, init) {
     try {
       const h = init?.headers;
       if (h) {
@@ -199,6 +269,8 @@
     td:last-child { text-align: right; font-variant-numeric: tabular-nums; }
     tr:not(:last-child) td { border-bottom: 1px solid rgba(51,65,85,.4); }
     .total td { border-top: 1px solid var(--border); font-weight: 600; padding-top: 8px; }
+    .fluz-pending td { color: var(--red); font-size: 12px; font-style: italic; }
+    .net td { color: var(--emerald); }
 
     /* Buttons */
     .btn {
@@ -483,6 +555,8 @@
       return '<div class="loading"><div class="spinner"></div><div>Loading accounts...</div></div>';
     }
 
+    const fluzPending = getFluzPending();
+
     let h = `<div class="section-hdr"><span>Accounts</span>
       <button class="btn btn-s btn-sm" data-action="refresh">Refresh</button></div>`;
     h += "<table><thead><tr><th>Account</th><th>Balance</th></tr></thead><tbody>";
@@ -492,6 +566,10 @@
       h += `<tr><td>${esc(a.nickname)}</td><td>${fmtCurrency(a.availableBalance)}</td></tr>`;
     }
     h += `<tr class="total"><td>Total</td><td>${fmtCurrency(total)}</td></tr>`;
+    if (fluzPending > 0) {
+      h += `<tr class="fluz-pending"><td>Fluz pending</td><td>-${fmtCurrency(fluzPending)}</td></tr>`;
+      h += `<tr class="total net"><td>Net available</td><td>${fmtCurrency(total - fluzPending)}</td></tr>`;
+    }
     h += "</tbody></table>";
     h += '<div class="actions"><button class="btn btn-p" data-action="show-transfer">Transfer</button></div>';
     return h;
