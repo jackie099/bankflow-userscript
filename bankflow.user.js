@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BankFlow
 // @namespace    bankflow
-// @version      2.7.0
+// @version      3.0.0
 // @description  Transfer & merge assistant for UCU and BCU credit union accounts
 // @match        https://online.ucu.org/*
 // @match        https://safe.bcu.org/*
@@ -393,6 +393,7 @@
     accounts: [],
     transfer: { sources: new Set(), amounts: {}, targetId: "" },
     loading: false,
+    fluzOpen: false,
     error: null,
     message: null,
     results: null,
@@ -458,7 +459,36 @@
     td:last-child { text-align: right; font-variant-numeric: tabular-nums; }
     tr:not(:last-child) td { border-bottom: 1px solid rgba(51,65,85,.4); }
     .total td { border-top: 1px solid var(--border); font-weight: 600; padding-top: 8px; }
-    .fluz-row td { color: var(--muted); font-size: 12px; font-style: italic; }
+    .zero td { color: var(--border); }
+
+    /* Summary card */
+    .summary { display: flex; gap: 0; margin-bottom: 14px; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+    .summary-item { flex: 1; padding: 10px 12px; border-right: 1px solid var(--border); }
+    .summary-item:last-child { border-right: none; }
+    .summary-label { font-size: 10px; text-transform: uppercase; letter-spacing: .3px; color: var(--muted); margin-bottom: 4px; }
+    .summary-value { font-size: 16px; font-weight: 700; font-variant-numeric: tabular-nums; }
+    .summary-value.positive { color: var(--emerald); }
+    .summary-value.negative { color: var(--red); }
+    .summary-value.neutral { color: var(--text); }
+
+    /* Fluz pending section */
+    .fluz-section { margin-bottom: 14px; }
+    .fluz-hdr {
+      display: flex; align-items: center; justify-content: space-between;
+      font-size: 10px; text-transform: uppercase; letter-spacing: .3px;
+      color: var(--muted); margin-bottom: 6px; cursor: pointer;
+    }
+    .fluz-hdr:hover { color: var(--text); }
+    .fluz-arrow { font-size: 8px; transition: transform .15s; }
+    .fluz-arrow.open { transform: rotate(90deg); }
+    .fluz-detail { font-size: 12px; }
+    .fluz-detail-row {
+      display: flex; justify-content: space-between; padding: 3px 0;
+      border-bottom: 1px solid rgba(51,65,85,.25);
+    }
+    .fluz-detail-row:last-child { border-bottom: none; }
+    .fluz-detail-name { color: var(--muted); }
+    .fluz-detail-amt { color: var(--red); font-variant-numeric: tabular-nums; font-weight: 500; }
 
     /* Buttons */
     .btn {
@@ -792,23 +822,45 @@
 
     const fluzPending = getFluzPending();
     const fluzTotal = fluzPending.reduce((s, f) => s + f.amount, 0);
+    const bankTotal = S.accounts.reduce((s, a) => s + a.availableBalance, 0);
+    const netTotal = bankTotal - fluzTotal;
+    const withBalance = S.accounts.filter((a) => a.availableBalance > 0);
 
-    let h = `<div class="section-hdr"><span>Accounts</span>
+    let h = "";
+
+    // ── Summary card ──
+    h += '<div class="summary">';
+    h += `<div class="summary-item"><div class="summary-label">Bank</div><div class="summary-value neutral">${fmtCurrency(bankTotal)}</div></div>`;
+    if (fluzTotal > 0) {
+      h += `<div class="summary-item"><div class="summary-label">Fluz Pending</div><div class="summary-value negative">−${fmtCurrency(fluzTotal)}</div></div>`;
+      h += `<div class="summary-item"><div class="summary-label">Net</div><div class="summary-value ${netTotal >= 0 ? "positive" : "negative"}">${fmtCurrency(netTotal)}</div></div>`;
+    }
+    h += "</div>";
+
+    // ── Accounts table (non-zero only) ──
+    h += `<div class="section-hdr"><span>Accounts (${withBalance.length})</span>
       <button class="btn btn-s btn-sm" data-action="refresh">Refresh</button></div>`;
     h += "<table><thead><tr><th>Account</th><th>Balance</th></tr></thead><tbody>";
-    let total = 0;
-    for (const a of S.accounts) {
-      total += a.availableBalance;
+    for (const a of withBalance) {
       h += `<tr><td>${esc(a.nickname)}</td><td>${fmtCurrency(a.availableBalance)}</td></tr>`;
     }
-    if (fluzPending.length > 0) {
-      for (const f of fluzPending) {
-        h += `<tr class="fluz-row"><td>Fluz · ${esc(f.nickname)}</td><td>−${fmtCurrency(f.amount)}</td></tr>`;
-      }
-    }
-    const netTotal = total - fluzTotal;
-    h += `<tr class="total"><td>Total</td><td>${fmtCurrency(netTotal)}</td></tr>`;
+    h += `<tr class="total"><td>Subtotal</td><td>${fmtCurrency(bankTotal)}</td></tr>`;
     h += "</tbody></table>";
+
+    // ── Fluz pending breakdown ──
+    if (fluzPending.length > 0) {
+      h += '<div class="fluz-section">';
+      h += `<div class="fluz-hdr" data-action="toggle-fluz"><span>Fluz Pending (${fluzPending.length} accounts)</span><span class="fluz-arrow ${S.fluzOpen ? "open" : ""}">&#9654;</span></div>`;
+      if (S.fluzOpen) {
+        h += '<div class="fluz-detail">';
+        for (const f of fluzPending) {
+          h += `<div class="fluz-detail-row"><span class="fluz-detail-name">${esc(f.nickname)}</span><span class="fluz-detail-amt">−${fmtCurrency(f.amount)}</span></div>`;
+        }
+        h += "</div>";
+      }
+      h += "</div>";
+    }
+
     h += '<div class="actions"><button class="btn btn-p" data-action="show-transfer">Transfer</button></div>';
     return h;
   }
@@ -990,7 +1042,7 @@
     h += "</div></div>";
 
     // Version
-    h += `<div style="text-align:center;font-size:10px;color:var(--border);margin-top:8px">BankFlow v2.7.0</div>`;
+    h += `<div style="text-align:center;font-size:10px;color:var(--border);margin-top:8px">BankFlow v3.0.0</div>`;
 
     return h;
   }
@@ -1031,6 +1083,11 @@
       switch (action) {
         case "refresh":
           S.accounts = [];
+          render();
+          break;
+
+        case "toggle-fluz":
+          S.fluzOpen = !S.fluzOpen;
           render();
           break;
 
