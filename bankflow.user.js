@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BankFlow
 // @namespace    bankflow
-// @version      2.5.1
+// @version      2.5.2
 // @description  Transfer & merge assistant for UCU and BCU credit union accounts
 // @match        https://online.ucu.org/*
 // @match        https://safe.bcu.org/*
@@ -249,27 +249,19 @@
 
     function initFluzPanel() {
       if (document.getElementById("bankflow-fluz-host")) return;
+      if (!document.body) return;
+      fluzRoot = null;
       createFluzPanel();
       logFluz("BankFlow Fluz listener active");
     }
 
-    // Remix hydration can wipe the DOM — watch for removal and re-inject
-    function watchForRemoval() {
-      const observer = new MutationObserver(() => {
-        if (!document.getElementById("bankflow-fluz-host") && document.body) {
-          fluzRoot = null;
-          initFluzPanel();
-        }
-      });
-      observer.observe(document.documentElement, { childList: true, subtree: true });
-    }
+    // Remix hydration wipes the DOM — poll to re-inject
+    setInterval(() => {
+      if (!document.getElementById("bankflow-fluz-host") && document.body) {
+        initFluzPanel();
+      }
+    }, 500);
 
-    if (document.readyState === "loading") {
-      document.addEventListener("DOMContentLoaded", () => { initFluzPanel(); watchForRemoval(); });
-    } else {
-      initFluzPanel();
-      watchForRemoval();
-    }
     return; // Don't inject bank UI on Fluz
   }
 
@@ -998,7 +990,7 @@
     h += "</div></div>";
 
     // Version
-    h += `<div style="text-align:center;font-size:10px;color:var(--border);margin-top:8px">BankFlow v2.5.1</div>`;
+    h += `<div style="text-align:center;font-size:10px;color:var(--border);margin-top:8px">BankFlow v2.5.2</div>`;
 
     return h;
   }
