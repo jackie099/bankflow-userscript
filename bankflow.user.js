@@ -269,8 +269,7 @@
     td:last-child { text-align: right; font-variant-numeric: tabular-nums; }
     tr:not(:last-child) td { border-bottom: 1px solid rgba(51,65,85,.4); }
     .total td { border-top: 1px solid var(--border); font-weight: 600; padding-top: 8px; }
-    .fluz-pending td { color: var(--red); font-size: 12px; font-style: italic; }
-    .net td { color: var(--emerald); }
+    .fluz-note { color: var(--dim); font-weight: 400; font-size: 11px; }
 
     /* Buttons */
     .btn {
@@ -565,11 +564,8 @@
       total += a.availableBalance;
       h += `<tr><td>${esc(a.nickname)}</td><td>${fmtCurrency(a.availableBalance)}</td></tr>`;
     }
-    h += `<tr class="total"><td>Total</td><td>${fmtCurrency(total)}</td></tr>`;
-    if (fluzPending > 0) {
-      h += `<tr class="fluz-pending"><td>Fluz pending</td><td>-${fmtCurrency(fluzPending)}</td></tr>`;
-      h += `<tr class="total net"><td>Net available</td><td>${fmtCurrency(total - fluzPending)}</td></tr>`;
-    }
+    const netTotal = fluzPending > 0 ? total - fluzPending : total;
+    h += `<tr class="total"><td>Total${fluzPending > 0 ? `<span class="fluz-note"> (−${fmtCurrency(fluzPending)} Fluz pending)</span>` : ""}</td><td>${fmtCurrency(netTotal)}</td></tr>`;
     h += "</tbody></table>";
     h += '<div class="actions"><button class="btn btn-p" data-action="show-transfer">Transfer</button></div>';
     return h;
