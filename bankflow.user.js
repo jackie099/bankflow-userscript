@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BankFlow
 // @namespace    bankflow
-// @version      2.5.4
+// @version      2.6.0
 // @description  Transfer & merge assistant for UCU and BCU credit union accounts
 // @match        https://online.ucu.org/*
 // @match        https://safe.bcu.org/*
@@ -97,47 +97,44 @@
     function logFluz(msg) { fluzLog.push({ ts: Date.now(), msg }); if (fluzLog.length > 50) fluzLog.shift(); renderFluzPanel(); }
 
     function storeFluzPending(text, url) {
-      logFluz(`Intercepted: ${url} (${text.length} chars)`);
+      logFluz(`Fetched: ${url} (${text.length} chars)`);
       const pending = extractFluzPending(text);
       if (pending) {
         GM_setValue("fluz_pending", { accounts: pending, ts: Date.now() });
         logFluz(`Stored: ${pending.map((p) => p.nickname + " $" + p.amount.toFixed(2)).join(", ")}`);
       } else {
-        logFluz("No user_cash_balances with pending found");
+        logFluz("No user_cash_balances with pending found in this response");
       }
     }
 
-    // Intercept fetch
-    const origFetch = unsafeWindow.fetch;
-    unsafeWindow.fetch = function (input, init) {
-      const url = typeof input === "string" ? input : input?.url || "";
-      console.log("[BF] fetch:", url.substring(0, 80));
-      const result = origFetch.apply(this, arguments);
-      if (url.includes(".data")) {
-        logFluz("Fetch .data: " + url.substring(0, 80));
-        result.then((resp) => {
-          resp.clone().text().then((text) => storeFluzPending(text, url)).catch((e) => logFluz("Clone error: " + e));
-        }).catch((e) => logFluz("Fetch error: " + e));
+    // Direct polling — fetch the .data endpoint ourselves using the page's cookies
+    const DATA_URLS = [
+      "/manage-money.data?_routes=routes%2Fmanage-money%2B%2F_layout",
+      "/home.data?_routes=routes%2F_index",
+    ];
+
+    async function pollFluzData() {
+      for (const url of DATA_URLS) {
+        try {
+          logFluz("Polling: " + url);
+          const resp = await unsafeWindow.fetch(url);
+          if (!resp.ok) { logFluz("HTTP " + resp.status + " for " + url); continue; }
+          const text = await resp.text();
+          storeFluzPending(text, url);
+          // If we found data, no need to try other URLs
+          const current = GM_getValue("fluz_pending", null);
+          if (current?.accounts?.length > 0) return;
+        } catch (e) {
+          logFluz("Poll error: " + e);
+        }
       }
-      return result;
-    };
-    console.log("[BF] Fluz fetch interceptor installed");
-    // Intercept XHR
-    const origXHROpen = unsafeWindow.XMLHttpRequest.prototype.open;
-    const origXHRSend = unsafeWindow.XMLHttpRequest.prototype.send;
-    unsafeWindow.XMLHttpRequest.prototype.open = function () {
-      this._bfUrl = arguments[1] || "";
-      return origXHROpen.apply(this, arguments);
-    };
-    unsafeWindow.XMLHttpRequest.prototype.send = function () {
-      if (this._bfUrl?.includes?.(".data")) {
-        const bfUrl = this._bfUrl;
-        logFluz("XHR .data: " + bfUrl.substring(0, 80));
-        this.addEventListener("load", function () { storeFluzPending(this.responseText || "", bfUrl); });
-      }
-      return origXHRSend.apply(this, arguments);
-    };
-    console.log("[BF] Fluz XHR interceptor installed");
+    }
+
+    // Poll on load and every 5 minutes
+    function startPolling() {
+      setTimeout(pollFluzData, 2000); // initial delay for page to settle
+      setInterval(pollFluzData, 300_000); // refresh every 5 min
+    }
 
     // ── Fluz Debug Panel ────────────────────────────────────────────────
     let fluzRoot;
@@ -243,7 +240,7 @@
       h += '<div class="section-title">Intercept Log</div>';
       h += '<div class="log">';
       if (fluzLog.length === 0) {
-        h += '<div class="empty">No .data requests intercepted yet. Navigate to a page with balance data.</div>';
+        h += '<div class="empty">Waiting for poll... data is fetched on load and every 5 min.</div>';
       } else {
         for (const entry of fluzLog) {
           const t = new Date(entry.ts).toLocaleTimeString();
@@ -255,12 +252,14 @@
       el.innerHTML = h;
     }
 
+    let pollingStarted = false;
     function initFluzPanel() {
       if (pdoc.getElementById("bankflow-fluz-host")) return;
       if (!pdoc.body) return;
       fluzRoot = null;
       createFluzPanel();
-      logFluz("BankFlow Fluz listener active");
+      logFluz("BankFlow Fluz panel active");
+      if (!pollingStarted) { pollingStarted = true; startPolling(); }
     }
 
     // Remix hydration wipes the DOM — poll to re-inject
@@ -998,7 +997,7 @@
     h += "</div></div>";
 
     // Version
-    h += `<div style="text-align:center;font-size:10px;color:var(--border);margin-top:8px">BankFlow v2.5.4</div>`;
+    h += `<div style="text-align:center;font-size:10px;color:var(--border);margin-top:8px">BankFlow v2.6.0</div>`;
 
     return h;
   }
