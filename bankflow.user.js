@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BankFlow
 // @namespace    bankflow
-// @version      2.6.0
+// @version      2.7.0
 // @description  Transfer & merge assistant for UCU and BCU credit union accounts
 // @match        https://online.ucu.org/*
 // @match        https://safe.bcu.org/*
@@ -65,29 +65,35 @@
       return deref(flat[0], 0);
     }
 
-    function extractFluzPending(text) {
+    // Extract per-bank-account pending from spend power data in add-money response
+    function extractBankPending(text) {
       try {
         const parsed = parseTurboStream(text);
         if (!parsed || typeof parsed !== "object") return null;
-        // Walk through route data to find user_cash_balances
-        for (const routeKey of Object.keys(parsed)) {
-          const route = parsed[routeKey];
-          const data = route?.data || route;
-          const bal = data?.user?.balance || data?.balance;
-          if (!bal?.user_cash_balances) continue;
-          const accounts = bal.user_cash_balances;
-          if (!Array.isArray(accounts)) continue;
-          const pending = [];
-          for (const cb of accounts) {
-            const avail = cb.available_cash_balance ?? 0;
-            const total = cb.total_cash_balance ?? 0;
-            const p = total - avail;
-            if (p > 0.005) {
-              pending.push({ nickname: cb.nickname || "Main account", amount: p });
+        // Recursively find rows with bank_account_id + spend_power
+        function findBankRows(obj, depth) {
+          if (depth > 6 || !obj) return [];
+          const results = [];
+          if (Array.isArray(obj)) {
+            for (const item of obj) {
+              if (item?.bank_account_id && item?.spend_power) {
+                const sp = item.spend_power?.spend_power || item.spend_power || {};
+                const pt = sp.pending_transactions ?? 0;
+                if (pt > 0.005) {
+                  results.push({ nickname: item.account_name || item.nickname || item.bank_account_id, amount: pt });
+                }
+              }
+              results.push(...findBankRows(item, depth + 1));
+            }
+          } else if (typeof obj === "object") {
+            for (const v of Object.values(obj)) {
+              results.push(...findBankRows(v, depth + 1));
             }
           }
-          if (pending.length > 0) return pending;
+          return results;
         }
+        const rows = findBankRows(parsed, 0);
+        return rows.length > 0 ? rows : null;
       } catch {}
       return null;
     }
@@ -96,37 +102,24 @@
     const fluzLog = [];
     function logFluz(msg) { fluzLog.push({ ts: Date.now(), msg }); if (fluzLog.length > 50) fluzLog.shift(); renderFluzPanel(); }
 
-    function storeFluzPending(text, url) {
-      logFluz(`Fetched: ${url} (${text.length} chars)`);
-      const pending = extractFluzPending(text);
-      if (pending) {
-        GM_setValue("fluz_pending", { accounts: pending, ts: Date.now() });
-        logFluz(`Stored: ${pending.map((p) => p.nickname + " $" + p.amount.toFixed(2)).join(", ")}`);
-      } else {
-        logFluz("No user_cash_balances with pending found in this response");
-      }
-    }
-
-    // Direct polling — fetch the .data endpoint ourselves using the page's cookies
-    const DATA_URLS = [
-      "/manage-money.data?_routes=routes%2Fmanage-money%2B%2F_layout",
-      "/home.data?_routes=routes%2F_index",
-    ];
+    const ADD_MONEY_URL = "/manage-money/add-money.data?_routes=routes%2Fmanage-money%2B%2Fadd-money";
 
     async function pollFluzData() {
-      for (const url of DATA_URLS) {
-        try {
-          logFluz("Polling: " + url);
-          const resp = await unsafeWindow.fetch(url);
-          if (!resp.ok) { logFluz("HTTP " + resp.status + " for " + url); continue; }
-          const text = await resp.text();
-          storeFluzPending(text, url);
-          // If we found data, no need to try other URLs
-          const current = GM_getValue("fluz_pending", null);
-          if (current?.accounts?.length > 0) return;
-        } catch (e) {
-          logFluz("Poll error: " + e);
+      try {
+        logFluz("Polling: add-money.data");
+        const resp = await unsafeWindow.fetch(ADD_MONEY_URL);
+        if (!resp.ok) { logFluz("HTTP " + resp.status); return; }
+        const text = await resp.text();
+        logFluz(`Fetched: ${text.length} chars`);
+        const pending = extractBankPending(text);
+        if (pending) {
+          GM_setValue("fluz_pending", { accounts: pending, ts: Date.now() });
+          logFluz(`Stored: ${pending.map((p) => p.nickname + " $" + p.amount.toFixed(2)).join(", ")}`);
+        } else {
+          logFluz("No bank accounts with pending_transactions found");
         }
+      } catch (e) {
+        logFluz("Poll error: " + e);
       }
     }
 
@@ -997,7 +990,7 @@
     h += "</div></div>";
 
     // Version
-    h += `<div style="text-align:center;font-size:10px;color:var(--border);margin-top:8px">BankFlow v2.6.0</div>`;
+    h += `<div style="text-align:center;font-size:10px;color:var(--border);margin-top:8px">BankFlow v2.7.0</div>`;
 
     return h;
   }
