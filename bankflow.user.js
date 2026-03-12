@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BankFlow
 // @namespace    bankflow
-// @version      2.2.0
+// @version      2.3.0
 // @description  Transfer & merge assistant for UCU and BCU credit union accounts
 // @match        https://online.ucu.org/*
 // @match        https://safe.bcu.org/*
@@ -200,6 +200,7 @@
   // ── State ───────────────────────────────────────────────────────────
   const S = {
     visible: false,
+    tab: "main",
     view: "home",
     accounts: [],
     transfer: { sources: new Set(), amounts: {}, targetId: "" },
@@ -401,6 +402,44 @@
     @keyframes spin { to { transform: rotate(360deg); } }
     .waiting { text-align: center; padding: 24px 12px; color: var(--muted); font-size: 13px; }
 
+    /* Nav tabs */
+    .bf-nav {
+      display: flex; border-bottom: 1px solid var(--border);
+      padding: 0 14px; gap: 0; background: var(--bg);
+    }
+    .bf-nav-tab {
+      padding: 6px 12px; font: 500 11px var(--font); color: var(--muted);
+      background: none; border: none; border-bottom: 2px solid transparent;
+      cursor: pointer; text-transform: uppercase; letter-spacing: .3px;
+    }
+    .bf-nav-tab:hover { color: var(--text); }
+    .bf-nav-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+    /* Dev view */
+    .dev-section { margin-bottom: 14px; }
+    .dev-section-title {
+      font-size: 10px; text-transform: uppercase; letter-spacing: .5px;
+      color: var(--muted); margin-bottom: 6px; font-weight: 600;
+    }
+    .dev-row {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 5px 0; font-size: 12px; border-bottom: 1px solid rgba(51,65,85,.3);
+    }
+    .dev-row:last-child { border-bottom: none; }
+    .dev-label { color: var(--muted); }
+    .dev-value { color: var(--text); font-variant-numeric: tabular-nums; font-family: monospace; font-size: 11px; }
+    .dev-value.ok { color: var(--green); }
+    .dev-value.warn { color: #f59e0b; }
+    .dev-value.err { color: var(--red); }
+    .dev-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+    .dev-input {
+      width: 80px; padding: 3px 6px; border-radius: 3px;
+      border: 1px solid var(--border); background: var(--bg); color: var(--text);
+      font: 12px monospace; text-align: right;
+    }
+    .dev-mono { font-family: monospace; font-size: 10px; color: var(--muted);
+      word-break: break-all; max-width: 200px; overflow: hidden; text-overflow: ellipsis; }
+
     #bf-content::-webkit-scrollbar { width: 6px; }
     #bf-content::-webkit-scrollbar-track { background: transparent; }
     #bf-content::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
@@ -445,6 +484,10 @@
           <span class="bf-timer" id="bf-timer">--:--</span>
           <button id="bf-close">&times;</button>
         </div>
+      </div>
+      <div class="bf-nav">
+        <button class="bf-nav-tab active" data-tab="main">Accounts</button>
+        <button class="bf-nav-tab" data-tab="dev">Dev</button>
       </div>
       <div id="bf-content"></div>
       <div id="bf-bottom" class="tf-bottom" style="display:none"></div>
@@ -512,12 +555,17 @@
     const panel = root.querySelector("#bf-panel");
     if (!el) return;
     updateStatus();
+    root.querySelectorAll(".bf-nav-tab").forEach((t) => t.classList.toggle("active", t.dataset.tab === S.tab));
 
     let h = "";
     if (S.error) h += `<div class="alert error">${esc(S.error)}</div>`;
     if (S.message) h += `<div class="alert success">${esc(S.message)}</div>`;
 
-    if (S.loading) {
+    if (S.tab === "dev") {
+      h += devView();
+      bottom.style.display = "none"; bottom.innerHTML = "";
+      panel.classList.remove("wide");
+    } else if (S.loading) {
       h += '<div class="loading"><div class="spinner"></div><div>Loading...</div></div>';
       bottom.style.display = "none"; bottom.innerHTML = "";
       panel.classList.remove("wide");
@@ -693,8 +741,71 @@
     return h;
   }
 
+  // ── Dev View ──────────────────────────────────────────────────────────
+  function devView() {
+    const ttl = tokenTimeLeft();
+    const tokenStatus = hasToken() ? "ok" : token ? "err" : "warn";
+    const tokenLabel = hasToken() ? `Active (${fmtTime(ttl)})` : token ? "Expired" : "None";
+    const tokenPreview = token ? token.slice(0, 16) + "..." : "—";
+
+    const fluzData = GM_getValue("fluz_pending", null);
+    const fluzAge = fluzData ? Math.round((Date.now() - fluzData.ts) / 1000) : null;
+    const fluzAgeLabel = fluzAge !== null
+      ? fluzAge < 60 ? `${fluzAge}s ago` : `${Math.round(fluzAge / 60)}m ago`
+      : "—";
+
+    let h = "";
+
+    // Token section
+    h += '<div class="dev-section">';
+    h += '<div class="dev-section-title">Session</div>';
+    h += `<div class="dev-row"><span class="dev-label">Status</span><span class="dev-value ${tokenStatus}">${tokenLabel}</span></div>`;
+    h += `<div class="dev-row"><span class="dev-label">Token</span><span class="dev-value dev-mono">${tokenPreview}</span></div>`;
+    h += `<div class="dev-row"><span class="dev-label">Bank</span><span class="dev-value">${BANK.name} (${BANK.id})</span></div>`;
+    h += `<div class="dev-row"><span class="dev-label">Hostname</span><span class="dev-value dev-mono">${location.hostname}</span></div>`;
+    h += "</div>";
+
+    // Fluz section
+    h += '<div class="dev-section">';
+    h += '<div class="dev-section-title">Fluz Integration</div>';
+    h += `<div class="dev-row"><span class="dev-label">Pending balance</span><span class="dev-value">${fluzData ? fmtCurrency(fluzData.amount) : "—"}</span></div>`;
+    h += `<div class="dev-row"><span class="dev-label">Last updated</span><span class="dev-value">${fluzAgeLabel}</span></div>`;
+    h += '<div class="dev-actions">';
+    h += '<button class="btn btn-s btn-sm" data-action="dev-set-fluz">Set Fluz Pending</button>';
+    h += '<input class="dev-input" id="dev-fluz-amt" type="number" value="500" step="50">';
+    h += '<button class="btn btn-s btn-sm" data-action="dev-clear-fluz">Clear</button>';
+    h += "</div></div>";
+
+    // State section
+    h += '<div class="dev-section">';
+    h += '<div class="dev-section-title">State</div>';
+    h += `<div class="dev-row"><span class="dev-label">Accounts loaded</span><span class="dev-value">${S.accounts.length}</span></div>`;
+    h += `<div class="dev-row"><span class="dev-label">View</span><span class="dev-value">${S.view}</span></div>`;
+    h += `<div class="dev-row"><span class="dev-label">Transfer sources</span><span class="dev-value">${S.transfer.sources.size}</span></div>`;
+    h += `<div class="dev-row"><span class="dev-label">Transfer target</span><span class="dev-value dev-mono">${S.transfer.targetId || "—"}</span></div>`;
+    h += '<div class="dev-actions">';
+    h += '<button class="btn btn-s btn-sm" data-action="dev-reload">Force Reload Accounts</button>';
+    h += '<button class="btn btn-s btn-sm" data-action="dev-clear-state">Reset State</button>';
+    h += "</div></div>";
+
+    // Version
+    h += `<div style="text-align:center;font-size:10px;color:var(--border);margin-top:8px">BankFlow v2.3.0</div>`;
+
+    return h;
+  }
+
   // ── Events ──────────────────────────────────────────────────────────
   function onClick(e) {
+    // Tab navigation
+    const tab = e.target.closest("[data-tab]");
+    if (tab) {
+      S.tab = tab.dataset.tab;
+      if (S.tab === "main") { S.view = "home"; }
+      root.querySelectorAll(".bf-nav-tab").forEach((t) => t.classList.toggle("active", t.dataset.tab === S.tab));
+      render();
+      return;
+    }
+
     const el = e.target.closest("[data-action]");
     if (!el) return;
     handleAction(el.dataset.action, el.dataset.param);
@@ -815,6 +926,37 @@
         }
 
         case "back":
+          S.view = "home";
+          render();
+          break;
+
+        case "dev-set-fluz": {
+          const input = root.querySelector("#dev-fluz-amt");
+          const amt = parseFloat(input?.value) || 500;
+          GM_setValue("fluz_pending", { amount: amt, ts: Date.now() });
+          render();
+          break;
+        }
+
+        case "dev-clear-fluz":
+          GM_setValue("fluz_pending", null);
+          render();
+          break;
+
+        case "dev-reload":
+          S.accounts = [];
+          S.tab = "main";
+          S.view = "home";
+          root.querySelectorAll(".bf-nav-tab").forEach((t) => t.classList.toggle("active", t.dataset.tab === "main"));
+          render();
+          break;
+
+        case "dev-clear-state":
+          S.accounts = [];
+          S.transfer = { sources: new Set(), amounts: {}, targetId: "" };
+          S.error = null;
+          S.message = null;
+          S.results = null;
           S.view = "home";
           render();
           break;
