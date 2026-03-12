@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BankFlow
 // @namespace    bankflow
-// @version      2.5.0
+// @version      2.5.1
 // @description  Transfer & merge assistant for UCU and BCU credit union accounts
 // @match        https://online.ucu.org/*
 // @match        https://safe.bcu.org/*
@@ -253,10 +253,22 @@
       logFluz("BankFlow Fluz listener active");
     }
 
+    // Remix hydration can wipe the DOM — watch for removal and re-inject
+    function watchForRemoval() {
+      const observer = new MutationObserver(() => {
+        if (!document.getElementById("bankflow-fluz-host") && document.body) {
+          fluzRoot = null;
+          initFluzPanel();
+        }
+      });
+      observer.observe(document.documentElement, { childList: true, subtree: true });
+    }
+
     if (document.readyState === "loading") {
-      document.addEventListener("DOMContentLoaded", initFluzPanel);
+      document.addEventListener("DOMContentLoaded", () => { initFluzPanel(); watchForRemoval(); });
     } else {
       initFluzPanel();
+      watchForRemoval();
     }
     return; // Don't inject bank UI on Fluz
   }
@@ -986,7 +998,7 @@
     h += "</div></div>";
 
     // Version
-    h += `<div style="text-align:center;font-size:10px;color:var(--border);margin-top:8px">BankFlow v2.5.0</div>`;
+    h += `<div style="text-align:center;font-size:10px;color:var(--border);margin-top:8px">BankFlow v2.5.1</div>`;
 
     return h;
   }
