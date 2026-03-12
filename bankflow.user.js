@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BankFlow
 // @namespace    bankflow
-// @version      2.5.3
+// @version      2.5.4
 // @description  Transfer & merge assistant for UCU and BCU credit union accounts
 // @match        https://online.ucu.org/*
 // @match        https://safe.bcu.org/*
@@ -110,14 +110,18 @@
     // Intercept fetch
     const origFetch = unsafeWindow.fetch;
     unsafeWindow.fetch = function (input, init) {
-      const result = origFetch.apply(this, arguments);
       const url = typeof input === "string" ? input : input?.url || "";
-      result.then((resp) => {
-        if (!url.includes(".data")) return;
-        resp.clone().text().then((text) => storeFluzPending(text, url)).catch(() => {});
-      }).catch(() => {});
+      console.log("[BF] fetch:", url.substring(0, 80));
+      const result = origFetch.apply(this, arguments);
+      if (url.includes(".data")) {
+        logFluz("Fetch .data: " + url.substring(0, 80));
+        result.then((resp) => {
+          resp.clone().text().then((text) => storeFluzPending(text, url)).catch((e) => logFluz("Clone error: " + e));
+        }).catch((e) => logFluz("Fetch error: " + e));
+      }
       return result;
     };
+    console.log("[BF] Fluz fetch interceptor installed");
     // Intercept XHR
     const origXHROpen = unsafeWindow.XMLHttpRequest.prototype.open;
     const origXHRSend = unsafeWindow.XMLHttpRequest.prototype.send;
@@ -128,10 +132,12 @@
     unsafeWindow.XMLHttpRequest.prototype.send = function () {
       if (this._bfUrl?.includes?.(".data")) {
         const bfUrl = this._bfUrl;
+        logFluz("XHR .data: " + bfUrl.substring(0, 80));
         this.addEventListener("load", function () { storeFluzPending(this.responseText || "", bfUrl); });
       }
       return origXHRSend.apply(this, arguments);
     };
+    console.log("[BF] Fluz XHR interceptor installed");
 
     // ── Fluz Debug Panel ────────────────────────────────────────────────
     let fluzRoot;
@@ -992,7 +998,7 @@
     h += "</div></div>";
 
     // Version
-    h += `<div style="text-align:center;font-size:10px;color:var(--border);margin-top:8px">BankFlow v2.5.3</div>`;
+    h += `<div style="text-align:center;font-size:10px;color:var(--border);margin-top:8px">BankFlow v2.5.4</div>`;
 
     return h;
   }
